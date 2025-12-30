@@ -2,6 +2,10 @@
 """
 FreeSpace - Hard Disk Move with Verification Workflow
 A Python/Flet GUI application to move directories to USB storage with verification.
+
+IMPORTANT FLET CONVENTIONS:
+- Always use ft.Icons (uppercase) - NOT ft.icons
+- Always use ft.Colors (uppercase) - NOT ft.colors
 """
 
 import flet as ft
@@ -47,7 +51,7 @@ class FreeSpaceApp:
             "FreeSpace - Hard Disk Move Workflow",
             size=24,
             weight=ft.FontWeight.BOLD,
-            color=ft.colors.BLUE_700
+            color=ft.Colors.BLUE_700
         )
         
         # Source directory section
@@ -57,12 +61,12 @@ class FreeSpaceApp:
                 ft.Row([
                     ft.ElevatedButton(
                         "Add Directory",
-                        icon=ft.icons.FOLDER_OPEN,
+                        icon=ft.Icons.FOLDER_OPEN,
                         on_click=self.pick_source_directory
                     ),
                     ft.ElevatedButton(
                         "Clear All",
-                        icon=ft.icons.CLEAR_ALL,
+                        icon=ft.Icons.CLEAR_ALL,
                         on_click=self.clear_source_directories
                     ),
                 ]),
@@ -73,13 +77,13 @@ class FreeSpaceApp:
                         spacing=5
                     ),
                     height=150,
-                    border=ft.border.all(1, ft.colors.GREY_400),
+                    border=ft.border.all(1, ft.Colors.GREY_400),
                     border_radius=5,
                     padding=10
                 ),
             ]),
             padding=10,
-            border=ft.border.all(1, ft.colors.BLUE_200),
+            border=ft.border.all(1, ft.Colors.BLUE_200),
             border_radius=10,
         )
         self.source_list = source_section.content.controls[2].content
@@ -91,19 +95,19 @@ class FreeSpaceApp:
                 ft.Row([
                     ft.ElevatedButton(
                         "Select USB Directory",
-                        icon=ft.icons.USB,
+                        icon=ft.Icons.USB,
                         on_click=self.pick_destination_directory
                     ),
                 ]),
                 ft.Container(
-                    content=ft.Text("No destination selected", italic=True, color=ft.colors.GREY_700),
+                    content=ft.Text("No destination selected", italic=True, color=ft.Colors.GREY_700),
                     padding=10,
-                    border=ft.border.all(1, ft.colors.GREY_400),
+                    border=ft.border.all(1, ft.Colors.GREY_400),
                     border_radius=5,
                 ),
             ]),
             padding=10,
-            border=ft.border.all(1, ft.colors.GREEN_200),
+            border=ft.border.all(1, ft.Colors.GREEN_200),
             border_radius=10,
         )
         self.destination_text = destination_section.content.controls[2].content
@@ -111,29 +115,29 @@ class FreeSpaceApp:
         # Action buttons
         self.copy_button = ft.ElevatedButton(
             "1. Copy to USB",
-            icon=ft.icons.COPY_ALL,
+            icon=ft.Icons.COPY_ALL,
             on_click=self.copy_directories,
             disabled=True,
-            bgcolor=ft.colors.BLUE_500,
-            color=ft.colors.WHITE
+            bgcolor=ft.Colors.BLUE_500,
+            color=ft.Colors.WHITE
         )
         
         self.verify_button = ft.ElevatedButton(
             "2. Verify Copy",
-            icon=ft.icons.VERIFIED,
+            icon=ft.Icons.VERIFIED,
             on_click=self.verify_copy,
             disabled=True,
-            bgcolor=ft.colors.GREEN_500,
-            color=ft.colors.WHITE
+            bgcolor=ft.Colors.GREEN_500,
+            color=ft.Colors.WHITE
         )
         
         self.finalize_button = ft.ElevatedButton(
             "3. Delete & Create Links",
-            icon=ft.icons.LINK,
+            icon=ft.Icons.LINK,
             on_click=self.finalize_move,
             disabled=True,
-            bgcolor=ft.colors.ORANGE_700,
-            color=ft.colors.WHITE
+            bgcolor=ft.Colors.ORANGE_700,
+            color=ft.Colors.WHITE
         )
         
         action_section = ft.Container(
@@ -149,14 +153,14 @@ class FreeSpaceApp:
         self.progress_bar = ft.ProgressBar(
             width=800,
             visible=False,
-            color=ft.colors.BLUE_500,
+            color=ft.Colors.BLUE_500,
         )
         
         # Status text
         self.status_text = ft.Text(
             "Ready to start. Select source and destination directories.",
             size=14,
-            color=ft.colors.GREY_700,
+            color=ft.Colors.GREY_700,
             italic=True
         )
         
@@ -168,7 +172,7 @@ class FreeSpaceApp:
                 self.status_text,
             ]),
             padding=10,
-            border=ft.border.all(1, ft.colors.GREY_300),
+            border=ft.border.all(1, ft.Colors.GREY_300),
             border_radius=10,
         )
         
@@ -213,17 +217,17 @@ class FreeSpaceApp:
         
         if not self.source_directories:
             self.source_list.controls.append(
-                ft.Text("No directories selected", italic=True, color=ft.colors.GREY_700)
+                ft.Text("No directories selected", italic=True, color=ft.Colors.GREY_700)
             )
         else:
             for i, dir_path in enumerate(self.source_directories):
                 self.source_list.controls.append(
                     ft.Row([
-                        ft.Icon(ft.icons.FOLDER, color=ft.colors.BLUE_500),
+                        ft.Icon(ft.Icons.FOLDER, color=ft.Colors.BLUE_500),
                         ft.Text(dir_path, expand=True, size=12),
                         ft.IconButton(
-                            icon=ft.icons.DELETE,
-                            icon_color=ft.colors.RED_500,
+                            icon=ft.Icons.DELETE,
+                            icon_color=ft.Colors.RED_500,
                             tooltip="Remove",
                             on_click=lambda e, idx=i: self.remove_source_directory(idx)
                         )
@@ -246,7 +250,7 @@ class FreeSpaceApp:
                 self.destination_directory = result.path
                 self.destination_text.value = result.path
                 self.destination_text.italic = False
-                self.destination_text.color = ft.colors.BLACK
+                self.destination_text.color = ft.Colors.BLACK
                 self.update_button_states()
                 self.page.update()
         
@@ -463,7 +467,7 @@ class FreeSpaceApp:
         
         dlg = ft.AlertDialog(
             modal=True,
-            title=ft.Text("⚠️ Final Confirmation", color=ft.colors.RED_700),
+            title=ft.Text("⚠️ Final Confirmation", color=ft.Colors.RED_700),
             content=ft.Text(
                 f"This will DELETE the original {len(self.source_directories)} "
                 f"director{'y' if len(self.source_directories) == 1 else 'ies'} "
@@ -564,7 +568,7 @@ class FreeSpaceApp:
             self.update_source_list()
             self.destination_text.value = "No destination selected"
             self.destination_text.italic = True
-            self.destination_text.color = ft.colors.GREY_700
+            self.destination_text.color = ft.Colors.GREY_700
             self.update_button_states()
             
         except Exception as ex:
@@ -580,7 +584,7 @@ class FreeSpaceApp:
         
         dlg = ft.AlertDialog(
             modal=True,
-            title=ft.Text("Error", color=ft.colors.RED_700),
+            title=ft.Text("Error", color=ft.Colors.RED_700),
             content=ft.Text(message),
             actions=[ft.TextButton("OK", on_click=close_dlg)],
         )
