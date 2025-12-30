@@ -32,10 +32,44 @@ pip3 install -r requirements.txt
 
 ## Usage
 
+### GUI Mode (Recommended)
+
 Run the application:
 ```bash
 python3 main.py
 ```
+
+### Programmatic API
+
+For advanced users, you can also use the programmatic API:
+
+```python
+from freespace_api import FreeSpaceAPI
+
+# Initialize API
+api = FreeSpaceAPI()
+
+# Copy directory
+result = api.copy_directory(
+    source="/path/to/source/directory",
+    destination="/path/to/usb/drive"
+)
+
+# Verify copy
+verify_result = api.verify_copy(
+    source="/path/to/source/directory",
+    destination=result['destination']
+)
+
+if verify_result['status'] == 'verified':
+    # Finalize: delete original and create symlink
+    finalize_result = api.finalize_move(
+        source="/path/to/source/directory",
+        destination=result['destination']
+    )
+```
+
+See `freespace_api.py` for more details.
 
 ### Workflow
 

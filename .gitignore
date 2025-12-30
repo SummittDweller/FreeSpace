@@ -136,3 +136,6 @@ Thumbs.db
 # Application specific
 freespace_logs/
 *.log
+
+# Test files
+test_*.py

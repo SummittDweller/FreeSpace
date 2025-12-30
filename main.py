@@ -446,10 +446,9 @@ class FreeSpaceApp:
                         "reason": "size mismatch"
                     })
                     continue
-                
-                # For important verification, check checksums for a sample
-                # (checking all files could be very slow)
-                # Here we'll just verify sizes and existence
+        
+        # Note: For performance reasons, this verification checks existence and size only.
+        # For critical data, consider running a full checksum verification separately.
         
         return result
     
@@ -510,18 +509,44 @@ class FreeSpaceApp:
                     })
                     continue
                 
-                # Delete original
-                shutil.rmtree(src_dir)
+                # Safety: Create symlink in temporary location first, then swap
+                temp_link = src_dir + ".tmp_link"
+                backup_dir = src_dir + ".backup_" + timestamp
                 
-                # Create symbolic link
-                os.symlink(dest_dir, src_dir)
-                
-                finalize_log["operations"].append({
-                    "source": src_dir,
-                    "destination": dest_dir,
-                    "symlink": src_dir,
-                    "status": "completed"
-                })
+                try:
+                    # Step 1: Create symlink to destination with temporary name
+                    os.symlink(dest_dir, temp_link)
+                    
+                    # Step 2: Rename original to backup
+                    os.rename(src_dir, backup_dir)
+                    
+                    # Step 3: Move symlink to final location
+                    os.rename(temp_link, src_dir)
+                    
+                    # Step 4: Delete backup only after symlink is in place
+                    shutil.rmtree(backup_dir)
+                    
+                    finalize_log["operations"].append({
+                        "source": src_dir,
+                        "destination": dest_dir,
+                        "symlink": src_dir,
+                        "status": "completed"
+                    })
+                    
+                except Exception as ex:
+                    # Rollback on error
+                    if os.path.exists(temp_link):
+                        os.remove(temp_link)
+                    if os.path.exists(backup_dir) and not os.path.exists(src_dir):
+                        os.rename(backup_dir, src_dir)
+                    
+                    finalize_log["operations"].append({
+                        "source": src_dir,
+                        "destination": dest_dir,
+                        "status": "failed",
+                        "error": str(ex)
+                    })
+                    raise
             
             # Save log
             with open(log_file, 'w') as f:
