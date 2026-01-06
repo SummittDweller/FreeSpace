@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 FreeSpace - Hard Disk Move with Verification Workflow
-A Python/Flet GUI application to move directories to USB storage with verification.
+A Python/Flet GUI application to move directories to external storage with verification.
 
 IMPORTANT FLET CONVENTIONS:
 - Always use ft.Icons (uppercase) - NOT ft.icons
@@ -16,6 +16,7 @@ import datetime
 import json
 import stat
 import errno
+import asyncio
 from pathlib import Path
 from typing import List, Dict
 
@@ -43,6 +44,11 @@ class FreeSpaceApp:
         self.copy_button = None
         self.verify_button = None
         self.finalize_button = None
+        
+        # FilePicker services
+        self.source_picker = ft.FilePicker()
+        self.destination_picker = ft.FilePicker()
+        self.page.services.extend([self.source_picker, self.destination_picker])
         
         self.setup_ui()
     
@@ -93,11 +99,11 @@ class FreeSpaceApp:
         # Destination directory section
         destination_section = ft.Container(
             content=ft.Column([
-                ft.Text("Destination Directory (USB Storage)", size=16, weight=ft.FontWeight.BOLD),
+                ft.Text("Destination Directory (External Storage)", size=16, weight=ft.FontWeight.BOLD),
                 ft.Row([
                     ft.ElevatedButton(
-                        "Select USB Directory",
-                        icon=ft.Icons.USB,
+                        "Select Destination Directory",
+                        icon=ft.Icons.STORAGE,
                         on_click=self.pick_destination_directory
                     ),
                 ]),
@@ -116,7 +122,7 @@ class FreeSpaceApp:
         
         # Action buttons
         self.copy_button = ft.ElevatedButton(
-            "1. Copy to USB",
+            "1. Copy to Destination",
             icon=ft.Icons.COPY_ALL,
             on_click=self.copy_directories,
             disabled=True,
@@ -193,20 +199,31 @@ class FreeSpaceApp:
             )
         )
     
-    def pick_source_directory(self, e):
+    async def pick_source_directory(self, e):
         """Open directory picker for source directories (supports multiple selection)."""
-        def on_result(result: ft.FilePickerResultEvent):
-            if result.path:
-                # Single directory selected
-                if result.path not in self.source_directories:
-                    self.source_directories.append(result.path)
-                    self.update_source_list()
-                    self.update_button_states()
+        initial_directory = None
         
-        file_picker = ft.FilePicker(on_result=on_result)
-        self.page.overlay.append(file_picker)
-        self.page.update()
-        file_picker.get_directory_path(dialog_title="Select Source Directory (or Directories)")
+        while True:
+            path = await self.source_picker.get_directory_path(
+                dialog_title=f"Select Source Directory ({len(self.source_directories)} selected so far - Cancel to finish)",
+                initial_directory=initial_directory
+            )
+            
+            if not path:
+                # User cancelled, exit loop
+                break
+            
+            # Directory selected
+            if path not in self.source_directories:
+                self.source_directories.append(path)
+                self.update_source_list()
+                self.update_button_states()
+                
+                # Remember the parent directory for next time
+                initial_directory = os.path.dirname(path)
+            else:
+                # Already added, show message
+                self.show_info(f"Directory already added:\n{path}")
     
     def clear_source_directories(self, e):
         """Clear all source directories."""
@@ -246,21 +263,19 @@ class FreeSpaceApp:
             self.update_source_list()
             self.update_button_states()
     
-    def pick_destination_directory(self, e):
+    async def pick_destination_directory(self, e):
         """Open directory picker for destination directory."""
-        def on_result(result: ft.FilePickerResultEvent):
-            if result.path:
-                self.destination_directory = result.path
-                self.destination_text.value = result.path
-                self.destination_text.italic = False
-                self.destination_text.color = ft.Colors.BLACK
-                self.update_button_states()
-                self.page.update()
+        path = await self.destination_picker.get_directory_path(
+            dialog_title="Select Destination Directory (External Storage)"
+        )
         
-        file_picker = ft.FilePicker(on_result=on_result)
-        self.page.overlay.append(file_picker)
-        self.page.update()
-        file_picker.get_directory_path(dialog_title="Select Destination USB Directory")
+        if path:
+            self.destination_directory = path
+            self.destination_text.value = path
+            self.destination_text.italic = False
+            self.destination_text.color = ft.Colors.BLACK
+            self.update_button_states()
+            self.page.update()
     
     def update_button_states(self):
         """Update the enabled/disabled state of action buttons."""
@@ -315,7 +330,7 @@ class FreeSpaceApp:
     
     def _perform_copy(self):
         """Perform the actual copy operation."""
-        self.update_status("Copying directories to USB...", show_progress=True)
+        self.update_status("Copying directories to destination...", show_progress=True)
         self.copy_button.disabled = True
         
         timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
@@ -507,7 +522,7 @@ class FreeSpaceApp:
         self.page.update()
     
     def _perform_finalize(self):
-        """Perform the finalization: replace files with symlinks."""
+        """Perform the finalization: replace files with symlinks to destination."""
         self.update_status("Finalizing move: replacing files with links...", show_progress=True)
         self.finalize_button.disabled = True
         
@@ -685,6 +700,55 @@ class FreeSpaceApp:
         self.page.overlay.append(dlg)
         dlg.open = True
         self.page.update()
+    
+    def show_info(self, message: str):
+        """Show an info dialog."""
+        def close_dlg(e):
+            dlg.open = False
+            self.page.update()
+        
+        dlg = ft.AlertDialog(
+            modal=True,
+            title=ft.Text("Information", color=ft.Colors.BLUE_700),
+            content=ft.Text(message),
+            actions=[ft.TextButton("OK", on_click=close_dlg)],
+        )
+        self.page.overlay.append(dlg)
+        dlg.open = True
+        self.page.update()
+    
+    async def ask_yes_no(self, title: str, message: str) -> bool:
+        """Show a yes/no dialog and return the result."""
+        result = [False]  # Use list to allow modification in nested function
+        
+        def on_yes(e):
+            result[0] = True
+            dlg.open = False
+            self.page.update()
+        
+        def on_no(e):
+            result[0] = False
+            dlg.open = False
+            self.page.update()
+        
+        dlg = ft.AlertDialog(
+            modal=True,
+            title=ft.Text(title),
+            content=ft.Text(message),
+            actions=[
+                ft.TextButton("Yes", on_click=on_yes),
+                ft.TextButton("No", on_click=on_no),
+            ],
+        )
+        self.page.overlay.append(dlg)
+        dlg.open = True
+        self.page.update()
+        
+        # Wait for dialog to close
+        while dlg.open:
+            await asyncio.sleep(0.1)
+        
+        return result[0]
 
 
 def main(page: ft.Page):
@@ -693,4 +757,4 @@ def main(page: ft.Page):
 
 
 if __name__ == "__main__":
-    ft.app(target=main)
+    ft.run(main)

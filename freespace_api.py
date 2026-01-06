@@ -24,11 +24,11 @@ class FreeSpaceAPI:
     
     def copy_directory(self, source: str, destination: str) -> dict:
         """
-        Copy a directory to a destination, skipping symbolic links.
+        Copy a directory to external storage destination, skipping symbolic links.
         
         Args:
             source: Source directory path
-            destination: Destination base directory path
+            destination: Destination base directory path (can be any external storage)
             
         Returns:
             dict with operation details and log file path
