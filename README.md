@@ -6,6 +6,7 @@ A Python/Flet GUI application to support a hard disk "move with verification to 
 
 - **Directory Selection**: Easy selection of one or more source directories from your hard drive
 - **External Storage Destination**: Select any external storage (USB, network drive, external HDD/SSD) as the destination
+- **Full Path Preservation**: The complete directory structure is preserved at the destination, maintaining the full path hierarchy
 - **Safe Copy**: Copy directories to external storage with progress indication
 - **Verification**: Verify that all files were copied correctly (checks existence and file sizes)
 - **Symbolic Links**: Delete original directories and replace them with symbolic links pointing to the USB location
@@ -77,7 +78,7 @@ See `freespace_api.py` for more details.
 
 2. **Select Destination**: Click "Select Destination Directory" to choose the destination folder on your external storage (USB drive, network drive, external HDD/SSD, etc.).
 
-3. **Copy to Destination**: Click "1. Copy to Destination" to copy all selected directories to the external storage destination. This preserves the directory structure.
+3. **Copy to Destination**: Click "1. Copy to Destination" to copy all selected directories to the external storage destination. This preserves the complete directory structure by maintaining the full path hierarchy at the destination.
 
 4. **Verify Copy**: Click "2. Verify Copy" to verify that all files were copied correctly. This checks file existence and sizes.
 
@@ -94,7 +95,11 @@ See `freespace_api.py` for more details.
 
 ### Logs
 
-Logs are stored in `~/freespace_logs/` with timestamps:
+Logs are stored in two locations:
+1. **Local**: `~/freespace_logs/` on your computer
+2. **Destination**: `<destination>/freespace_logs/` on your external storage
+
+Log files include:
 - `copy_log_YYYYMMDD_HHMMSS.json` - Copy operation details
 - `verify_log_YYYYMMDD_HHMMSS.json` - Verification results
 - `finalize_log_YYYYMMDD_HHMMSS.json` - Finalization details including:
@@ -104,6 +109,8 @@ Logs are stored in `~/freespace_logs/` with timestamps:
   - `skipped_details`: List of skipped files with reasons
   - `failed_details`: List of failed files with error messages
 
+Having logs in both locations ensures you have a complete record of all operations both locally and with your backed-up data.
+
 ## Example Use Case
 
 You have large media directories on your hard drive that you want to move to external storage:
@@ -112,7 +119,11 @@ You have large media directories on your hard drive that you want to move to ext
 2. Add `/home/user/Videos/Projects` and `/home/user/Photos/2024`
 3. Select destination `/media/external/backup/` (could be USB drive, network drive, external SSD, etc.)
 4. Copy → Verify → Finalize
-5. Original directories become symbolic links: `/home/user/Videos/Projects` → `/media/usb/backup/Projects`
+5. Original directories become symbolic links:
+   - `/home/user/Videos/Projects` → `/media/external/backup/home/user/Videos/Projects`
+   - `/home/user/Photos/2024` → `/media/external/backup/home/user/Photos/2024`
+
+The full directory structure is preserved at the destination, making it easy to restore or relocate files later.
 
 ## Important Notes
 

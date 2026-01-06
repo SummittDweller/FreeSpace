@@ -17,6 +17,7 @@ import json
 import stat
 import errno
 import asyncio
+import threading
 from pathlib import Path
 from typing import List, Dict
 
@@ -67,12 +68,12 @@ class FreeSpaceApp:
             content=ft.Column([
                 ft.Text("Source Directories (Hard Drive)", size=16, weight=ft.FontWeight.BOLD),
                 ft.Row([
-                    ft.ElevatedButton(
+                    ft.Button(
                         "Add Directory/Directories",
                         icon=ft.Icons.FOLDER_OPEN,
                         on_click=self.pick_source_directory
                     ),
-                    ft.ElevatedButton(
+                    ft.Button(
                         "Clear All",
                         icon=ft.Icons.CLEAR_ALL,
                         on_click=self.clear_source_directories
@@ -85,13 +86,13 @@ class FreeSpaceApp:
                         spacing=5
                     ),
                     height=150,
-                    border=ft.border.all(1, ft.Colors.GREY_400),
+                    border=ft.Border.all(1, ft.Colors.GREY_400),
                     border_radius=5,
                     padding=10
                 ),
             ]),
             padding=10,
-            border=ft.border.all(1, ft.Colors.BLUE_200),
+            border=ft.Border.all(1, ft.Colors.BLUE_200),
             border_radius=10,
         )
         self.source_list = source_section.content.controls[2].content
@@ -101,7 +102,7 @@ class FreeSpaceApp:
             content=ft.Column([
                 ft.Text("Destination Directory (External Storage)", size=16, weight=ft.FontWeight.BOLD),
                 ft.Row([
-                    ft.ElevatedButton(
+                    ft.Button(
                         "Select Destination Directory",
                         icon=ft.Icons.STORAGE,
                         on_click=self.pick_destination_directory
@@ -110,42 +111,48 @@ class FreeSpaceApp:
                 ft.Container(
                     content=ft.Text("No destination selected", italic=True, color=ft.Colors.GREY_700),
                     padding=10,
-                    border=ft.border.all(1, ft.Colors.GREY_400),
+                    border=ft.Border.all(1, ft.Colors.GREY_400),
                     border_radius=5,
                 ),
             ]),
             padding=10,
-            border=ft.border.all(1, ft.Colors.GREEN_200),
+            border=ft.Border.all(1, ft.Colors.GREEN_200),
             border_radius=10,
         )
         self.destination_text = destination_section.content.controls[2].content
         
         # Action buttons
-        self.copy_button = ft.ElevatedButton(
+        self.copy_button = ft.Button(
             "1. Copy to Destination",
             icon=ft.Icons.COPY_ALL,
             on_click=self.copy_directories,
             disabled=True,
-            bgcolor=ft.Colors.BLUE_500,
-            color=ft.Colors.WHITE
+            style=ft.ButtonStyle(
+                color=ft.Colors.WHITE,
+                bgcolor=ft.Colors.BLUE_500
+            )
         )
         
-        self.verify_button = ft.ElevatedButton(
+        self.verify_button = ft.Button(
             "2. Verify Copy",
             icon=ft.Icons.VERIFIED,
             on_click=self.verify_copy,
             disabled=True,
-            bgcolor=ft.Colors.GREEN_500,
-            color=ft.Colors.WHITE
+            style=ft.ButtonStyle(
+                color=ft.Colors.WHITE,
+                bgcolor=ft.Colors.GREEN_500
+            )
         )
         
-        self.finalize_button = ft.ElevatedButton(
+        self.finalize_button = ft.Button(
             "3. Delete & Create Links",
             icon=ft.Icons.LINK,
             on_click=self.finalize_move,
             disabled=True,
-            bgcolor=ft.Colors.ORANGE_700,
-            color=ft.Colors.WHITE
+            style=ft.ButtonStyle(
+                color=ft.Colors.WHITE,
+                bgcolor=ft.Colors.ORANGE_700
+            )
         )
         
         action_section = ft.Container(
@@ -169,18 +176,27 @@ class FreeSpaceApp:
             "Ready to start. Select source and destination directories.",
             size=14,
             color=ft.Colors.GREY_700,
-            italic=True
+            italic=True,
+            selectable=True
         )
         
         # Status section
         status_section = ft.Container(
             content=ft.Column([
-                ft.Text("Status", size=16, weight=ft.FontWeight.BOLD),
+                ft.Row([
+                    ft.Text("Status", size=16, weight=ft.FontWeight.BOLD),
+                    ft.IconButton(
+                        icon=ft.Icons.CONTENT_COPY,
+                        tooltip="Copy status text",
+                        icon_size=20,
+                        on_click=self.copy_status_to_clipboard
+                    ),
+                ]),
                 self.progress_bar,
                 self.status_text,
             ]),
             padding=10,
-            border=ft.border.all(1, ft.Colors.GREY_300),
+            border=ft.Border.all(1, ft.Colors.GREY_300),
             border_radius=10,
         )
         
@@ -202,10 +218,16 @@ class FreeSpaceApp:
     async def pick_source_directory(self, e):
         """Open directory picker for source directories (supports multiple selection)."""
         initial_directory = None
+        last_selected_name = None
         
         while True:
+            # Build dialog title with helpful context
+            title = f"Select Source Directory ({len(self.source_directories)} selected so far - Cancel to finish)"
+            if last_selected_name:
+                title = f"Last: {last_selected_name} | {title}"
+            
             path = await self.source_picker.get_directory_path(
-                dialog_title=f"Select Source Directory ({len(self.source_directories)} selected so far - Cancel to finish)",
+                dialog_title=title,
                 initial_directory=initial_directory
             )
             
@@ -219,7 +241,8 @@ class FreeSpaceApp:
                 self.update_source_list()
                 self.update_button_states()
                 
-                # Remember the parent directory for next time
+                # Remember the parent directory and name for next time
+                last_selected_name = os.path.basename(path)
                 initial_directory = os.path.dirname(path)
             else:
                 # Already added, show message
@@ -299,39 +322,37 @@ class FreeSpaceApp:
                 sha256_hash.update(byte_block)
         return sha256_hash.hexdigest()
     
-    def copy_directories(self, e):
-        """Copy selected directories to USB destination."""
+    async def copy_directories(self, e):
+        """Copy selected directories to destination."""
         if not self.source_directories or not self.destination_directory:
             self.show_error("Please select source and destination directories.")
             return
         
         # Confirm action
-        def on_dialog_result(dialog_result):
-            dlg.open = False
-            self.page.update()
-            if dialog_result == "yes":
-                self._perform_copy()
-        
-        dlg = ft.AlertDialog(
-            modal=True,
-            title=ft.Text("Confirm Copy"),
-            content=ft.Text(
-                f"Copy {len(self.source_directories)} director{'y' if len(self.source_directories) == 1 else 'ies'} "
-                f"to {self.destination_directory}?\n\nThis may take a while depending on the size."
-            ),
-            actions=[
-                ft.TextButton("Yes", on_click=lambda e: on_dialog_result("yes")),
-                ft.TextButton("No", on_click=lambda e: on_dialog_result("no")),
-            ],
+        confirmed = await self.ask_yes_no(
+            "Confirm Copy",
+            f"Copy {len(self.source_directories)} director{'y' if len(self.source_directories) == 1 else 'ies'} "
+            f"to {self.destination_directory}?\n\nThis may take a while depending on the size."
         )
-        self.page.overlay.append(dlg)
-        dlg.open = True
-        self.page.update()
+        
+        if confirmed:
+            # Run the copy operation in a background thread to avoid blocking UI
+            def run_copy():
+                try:
+                    self._perform_copy()
+                except Exception as ex:
+                    print(f"Exception during copy: {ex}")
+                    import traceback
+                    traceback.print_exc()
+            
+            thread = threading.Thread(target=run_copy, daemon=True)
+            thread.start()
     
     def _perform_copy(self):
         """Perform the actual copy operation."""
         self.update_status("Copying directories to destination...", show_progress=True)
         self.copy_button.disabled = True
+        self.page.update()  # Force UI update before starting long operation
         
         timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
         log_file = self.log_directory / f"copy_log_{timestamp}.json"
@@ -345,10 +366,16 @@ class FreeSpaceApp:
         
         try:
             for src_dir in self.source_directories:
-                dir_name = os.path.basename(src_dir)
-                dest_dir = os.path.join(self.destination_directory, dir_name)
+                # Preserve full directory structure at destination
+                # Convert absolute path to relative path structure
+                src_path = Path(src_dir).resolve()
                 
-                self.update_status(f"Copying: {dir_name}...", show_progress=True)
+                # Create the full path at destination by preserving the directory structure
+                # Remove leading slash to make it relative, then join with destination
+                rel_structure = str(src_path).lstrip('/')
+                dest_dir = os.path.join(self.destination_directory, rel_structure)
+                
+                self.update_status(f"Copying: {src_dir}...", show_progress=True)
                 
                 if os.path.exists(dest_dir):
                     self.show_error(f"Destination already exists: {dest_dir}")
@@ -374,11 +401,17 @@ class FreeSpaceApp:
                     "failed_files": errors[:10] if errors else None  # Log first 10 failures
                 })
             
-            # Save log
+            # Save log locally
             with open(log_file, 'w') as f:
                 json.dump(copy_log, f, indent=2)
             
-            self.update_status(f"Copy completed! Log saved to: {log_file}", show_progress=False)
+            # Copy log to destination as well
+            dest_log_dir = os.path.join(self.destination_directory, "freespace_logs")
+            os.makedirs(dest_log_dir, exist_ok=True)
+            dest_log_file = os.path.join(dest_log_dir, f"copy_log_{timestamp}.json")
+            shutil.copy2(log_file, dest_log_file)
+            
+            self.update_status(f"Copy completed! Log saved to: {log_file} and {dest_log_file}", show_progress=False)
             self.verify_button.disabled = False
             self.page.update()
             
@@ -408,10 +441,12 @@ class FreeSpaceApp:
             all_verified = True
             
             for src_dir in self.source_directories:
-                dir_name = os.path.basename(src_dir)
-                dest_dir = os.path.join(self.destination_directory, dir_name)
+                # Use full path structure like in copy
+                src_path = Path(src_dir).resolve()
+                rel_structure = str(src_path).lstrip('/')
+                dest_dir = os.path.join(self.destination_directory, rel_structure)
                 
-                self.update_status(f"Verifying: {dir_name}...", show_progress=True)
+                self.update_status(f"Verifying: {src_dir}...", show_progress=True)
                 
                 if not os.path.exists(dest_dir):
                     all_verified = False
@@ -430,15 +465,21 @@ class FreeSpaceApp:
                 if verification_result["status"] != "verified":
                     all_verified = False
             
-            # Save log
+            # Save log locally
             with open(log_file, 'w') as f:
                 json.dump(verify_log, f, indent=2)
             
+            # Copy log to destination
+            dest_log_dir = os.path.join(self.destination_directory, "freespace_logs")
+            os.makedirs(dest_log_dir, exist_ok=True)
+            dest_log_file = os.path.join(dest_log_dir, f"verify_log_{timestamp}.json")
+            shutil.copy2(log_file, dest_log_file)
+            
             if all_verified:
-                self.update_status(f"Verification successful! Log saved to: {log_file}", show_progress=False)
+                self.update_status(f"Verification successful! Log saved to: {log_file} and {dest_log_file}", show_progress=False)
                 self.finalize_button.disabled = False
             else:
-                self.update_status(f"Verification failed! Check log: {log_file}", show_progress=False)
+                self.update_status(f"Verification failed! Check log: {log_file} and {dest_log_file}", show_progress=False)
                 self.verify_button.disabled = False
             
             self.page.update()
@@ -491,40 +532,38 @@ class FreeSpaceApp:
         
         return result
     
-    def finalize_move(self, e):
+    async def finalize_move(self, e):
         """Delete original directories and create symbolic links."""
         # Strong confirmation required
-        def on_dialog_result(dialog_result):
-            dlg.open = False
-            self.page.update()
-            if dialog_result == "yes":
-                self._perform_finalize()
-        
-        dlg = ft.AlertDialog(
-            modal=True,
-            title=ft.Text("⚠️ Final Confirmation", color=ft.Colors.RED_700),
-            content=ft.Text(
-                f"This will REPLACE all files in the original {len(self.source_directories)} "
-                f"director{'y' if len(self.source_directories) == 1 else 'ies'} "
-                f"with symbolic links to the USB copies.\n\n"
-                "Directory structure will be preserved.\n"
-                "Only individual files will be replaced with links.\n\n"
-                "This action cannot be undone!\n\n"
-                "Are you absolutely sure?"
-            ),
-            actions=[
-                ft.TextButton("Yes, Delete and Link", on_click=lambda e: on_dialog_result("yes")),
-                ft.TextButton("Cancel", on_click=lambda e: on_dialog_result("no")),
-            ],
+        confirmed = await self.ask_yes_no(
+            "⚠️ Final Confirmation",
+            f"This will REPLACE all files in the original {len(self.source_directories)} "
+            f"director{'y' if len(self.source_directories) == 1 else 'ies'} "
+            f"with symbolic links to the destination copies.\n\n"
+            "Directory structure will be preserved.\n"
+            "Only individual files will be replaced with links.\n\n"
+            "This action cannot be undone!\n\n"
+            "Are you absolutely sure?"
         )
-        self.page.overlay.append(dlg)
-        dlg.open = True
-        self.page.update()
+        
+        if confirmed:
+            # Run the finalize operation in a background thread to avoid blocking UI
+            def run_finalize():
+                try:
+                    self._perform_finalize()
+                except Exception as ex:
+                    print(f"Exception during finalize: {ex}")
+                    import traceback
+                    traceback.print_exc()
+            
+            thread = threading.Thread(target=run_finalize, daemon=True)
+            thread.start()
     
     def _perform_finalize(self):
         """Perform the finalization: replace files with symlinks to destination."""
         self.update_status("Finalizing move: replacing files with links...", show_progress=True)
         self.finalize_button.disabled = True
+        self.page.update()  # Force UI update before starting long operation
         
         timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
         log_file = self.log_directory / f"finalize_log_{timestamp}.json"
@@ -536,10 +575,12 @@ class FreeSpaceApp:
         
         try:
             for src_dir in self.source_directories:
-                dir_name = os.path.basename(src_dir)
-                dest_dir = os.path.join(self.destination_directory, dir_name)
+                # Use full path structure like in copy
+                src_path = Path(src_dir).resolve()
+                rel_structure = str(src_path).lstrip('/')
+                dest_dir = os.path.join(self.destination_directory, rel_structure)
                 
-                self.update_status(f"Finalizing: {dir_name}...", show_progress=True)
+                self.update_status(f"Finalizing: {src_dir}...", show_progress=True)
                 
                 if not os.path.exists(dest_dir):
                     finalize_log["operations"].append({
@@ -642,9 +683,15 @@ class FreeSpaceApp:
                     })
                     raise
             
-            # Save log
+            # Save log locally
             with open(log_file, 'w') as f:
                 json.dump(finalize_log, f, indent=2)
+            
+            # Copy log to destination
+            dest_log_dir = os.path.join(self.destination_directory, "freespace_logs")
+            os.makedirs(dest_log_dir, exist_ok=True)
+            dest_log_file = os.path.join(dest_log_dir, f"finalize_log_{timestamp}.json")
+            shutil.copy2(log_file, dest_log_file)
             
             # Count total files processed and disk space freed
             total_processed = sum(op.get("files_processed", 0) for op in finalize_log["operations"])
@@ -667,7 +714,7 @@ class FreeSpaceApp:
                 status_msg += f" ({total_skipped} files skipped)"
             if total_failed > 0:
                 status_msg += f" ({total_failed} files failed - check log)"
-            status_msg += f" Log saved to: {log_file}"
+            status_msg += f" Logs saved to: {log_file} and {dest_log_file}"
             
             self.update_status(status_msg, show_progress=False)
             
@@ -749,6 +796,24 @@ class FreeSpaceApp:
             await asyncio.sleep(0.1)
         
         return result[0]
+    
+    def copy_status_to_clipboard(self, e):
+        """Copy the current status text to clipboard."""
+        self.page.set_clipboard(self.status_text.value)
+        # Show a brief confirmation
+        original_value = self.status_text.value
+        self.status_text.value = "✓ Status copied to clipboard!"
+        self.page.update()
+        
+        # Reset after a brief delay
+        import time
+        def reset_status():
+            time.sleep(1)
+            self.status_text.value = original_value
+            self.page.update()
+        
+        thread = threading.Thread(target=reset_status, daemon=True)
+        thread.start()
 
 
 def main(page: ft.Page):
