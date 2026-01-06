@@ -81,7 +81,9 @@ See `freespace_api.py` for more details.
 
 4. **Verify Copy**: Click "2. Verify Copy" to verify that all files were copied correctly. This checks file existence and sizes.
 
-5. **Delete & Create Links**: Click "3. Delete & Create Links" to delete the original directories and replace them with symbolic links pointing to the USB location.
+5. **Replace Files with Links**: Click "3. Delete & Create Links" to replace individual files with symbolic links pointing to the USB location. Directory structure is preserved; only the actual files are replaced with links.
+
+   **Important**: Immutable files (files with the `uchg` flag on macOS, commonly used by apps to protect important data) are automatically skipped and left unchanged. The log will report how many files were skipped.
 
 ### Safety Features
 
@@ -95,7 +97,12 @@ See `freespace_api.py` for more details.
 Logs are stored in `~/freespace_logs/` with timestamps:
 - `copy_log_YYYYMMDD_HHMMSS.json` - Copy operation details
 - `verify_log_YYYYMMDD_HHMMSS.json` - Verification results
-- `finalize_log_YYYYMMDD_HHMMSS.json` - Finalization details (deletions and symlinks)
+- `finalize_log_YYYYMMDD_HHMMSS.json` - Finalization details including:
+  - `files_processed`: Number of files successfully replaced with symlinks
+  - `files_skipped`: Number of immutable/protected files skipped
+  - `files_failed`: Number of files that failed to process
+  - `skipped_details`: List of skipped files with reasons
+  - `failed_details`: List of failed files with error messages
 
 ## Example Use Case
 
@@ -113,6 +120,8 @@ You have large media directories on your hard drive that you want to move to an 
 - **Symbolic Links**: The tool creates symbolic links that work on Linux/Mac. On Windows, you may need administrator privileges
 - **USB Drive**: Make sure your USB drive has enough space and remains connected throughout the process
 - **Log Files**: Keep log files for reference in case you need to verify or troubleshoot operations
+- **Immutable Files**: Files protected with the immutable flag (common in macOS apps like Receipts, Mail, etc.) are automatically skipped and remain as original files. The application reports how many files were skipped in the status message and logs detailed information.
+- **Directory Structure**: The finalization process preserves directory structure. Only individual files are replaced with symbolic links, not entire directories.
 
 ## License
 

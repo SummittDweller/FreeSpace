@@ -9,6 +9,8 @@ import shutil
 import hashlib
 import json
 import datetime
+import stat
+import errno
 from pathlib import Path
 
 
@@ -22,7 +24,7 @@ class FreeSpaceAPI:
     
     def copy_directory(self, source: str, destination: str) -> dict:
         """
-        Copy a directory to a destination.
+        Copy a directory to a destination, skipping symbolic links.
         
         Args:
             source: Source directory path
@@ -40,14 +42,26 @@ class FreeSpaceAPI:
         if os.path.exists(dest_path):
             raise FileExistsError(f"Destination already exists: {dest_path}")
         
-        shutil.copytree(source, dest_path)
+        # Copy directory but skip symbolic links and handle errors
+        errors = []
+        def copy_with_errors(src, dst, *, follow_symlinks=True):
+            try:
+                return shutil.copy2(src, dst, follow_symlinks=follow_symlinks)
+            except Exception as e:
+                errors.append((src, str(e)))
+                return None
+        
+        shutil.copytree(source, dest_path, copy_function=copy_with_errors,
+                       ignore=lambda dir, files: [f for f in files if os.path.islink(os.path.join(dir, f))])
         
         log_data = {
             "timestamp": timestamp,
             "operation": "copy",
             "source": source,
             "destination": dest_path,
-            "status": "completed"
+            "status": "completed" if not errors else "partial",
+            "files_failed": len(errors),
+            "failed_files": errors[:10] if errors else None  # Log first 10 failures
         }
         
         with open(log_file, 'w') as f:
@@ -57,7 +71,7 @@ class FreeSpaceAPI:
     
     def verify_copy(self, source: str, destination: str) -> dict:
         """
-        Verify that a directory was copied correctly.
+        Verify that a directory was copied correctly, skipping symbolic links.
         
         Args:
             source: Original source directory
@@ -74,6 +88,11 @@ class FreeSpaceAPI:
         for root, dirs, files in os.walk(source):
             for file in files:
                 src_file = os.path.join(root, file)
+                
+                # Skip symbolic links
+                if os.path.islink(src_file):
+                    continue
+                
                 rel_path = os.path.relpath(src_file, source)
                 dest_file = os.path.join(destination, rel_path)
                 
@@ -100,12 +119,13 @@ class FreeSpaceAPI:
     
     def finalize_move(self, source: str, destination: str) -> dict:
         """
-        Delete source directory and create a symbolic link.
+        Replace individual files with symbolic links.
+        Directory structure is preserved, only files are replaced with links.
         Uses a safe multi-step process to prevent data loss.
         
         Args:
-            source: Original source directory to delete
-            destination: Destination directory to link to
+            source: Original source directory
+            destination: Destination directory containing copied files
             
         Returns:
             dict with operation results
@@ -116,43 +136,119 @@ class FreeSpaceAPI:
         if not os.path.exists(destination):
             raise FileNotFoundError(f"Destination does not exist: {destination}")
         
-        # Safety: Create symlink first, then delete original
-        temp_link = source + ".tmp_link"
-        backup_dir = source + ".backup_" + timestamp
+        files_processed = []
+        files_failed = []
+        files_skipped = []
+        bytes_freed = 0
         
         try:
-            # Step 1: Create symlink with temporary name
-            os.symlink(destination, temp_link)
-            
-            # Step 2: Rename original to backup
-            os.rename(source, backup_dir)
-            
-            # Step 3: Move symlink to final location
-            os.rename(temp_link, source)
-            
-            # Step 4: Delete backup only after symlink is in place
-            shutil.rmtree(backup_dir)
+            # Walk through all files in source directory
+            for root, dirs, files in os.walk(source):
+                for file in files:
+                    src_file = os.path.join(root, file)
+                    rel_path = os.path.relpath(src_file, source)
+                    dest_file = os.path.join(destination, rel_path)
+                    
+                    # Skip symbolic links - don't process existing links
+                    if os.path.islink(src_file):
+                        files_skipped.append({
+                            "file": rel_path,
+                            "reason": "already a symbolic link"
+                        })
+                        continue
+                    
+                    if not os.path.exists(dest_file):
+                        files_failed.append({
+                            "file": rel_path,
+                            "reason": "destination file does not exist"
+                        })
+                        continue
+                    
+                    # Check if file is immutable (protected)
+                    try:
+                        file_stat = os.stat(src_file)
+                        if hasattr(stat, 'UF_IMMUTABLE') and (file_stat.st_flags & stat.UF_IMMUTABLE):
+                            files_skipped.append({
+                                "file": rel_path,
+                                "reason": "file is immutable (protected)"
+                            })
+                            continue
+                    except Exception:
+                        pass  # If we can't check flags, try to process anyway
+                    
+                    try:
+                        # Get file size before replacing
+                        file_size = os.path.getsize(src_file)
+                        
+                        # Create backup of original file
+                        backup_file = src_file + ".backup_" + timestamp
+                        os.rename(src_file, backup_file)
+                        
+                        # Create symlink to destination file
+                        os.symlink(dest_file, src_file)
+                        
+                        # Delete backup after successful symlink creation
+                        os.remove(backup_file)
+                        
+                        # Track space freed
+                        bytes_freed += file_size
+                        files_processed.append(rel_path)
+                        
+                    except Exception as file_ex:
+                        # Rollback this file on error
+                        if os.path.exists(backup_file):
+                            if os.path.exists(src_file) and os.path.islink(src_file):
+                                os.remove(src_file)
+                            os.rename(backup_file, src_file)
+                        
+                        files_failed.append({
+                            "file": rel_path,
+                            "reason": str(file_ex)
+                        })
             
             log_data = {
                 "timestamp": timestamp,
                 "operation": "finalize",
-                "deleted": source,
-                "symlink_target": destination,
-                "symlink_path": source,
-                "status": "completed"
+                "source": source,
+                "destination": destination,
+                "files_processed": len(files_processed),
+                "files_skipped": len(files_skipped),
+                "files_failed": len(files_failed),
+                "bytes_freed": bytes_freed,
+                "processed_files": files_processed,
+                "skipped_files": files_skipped,
+                "failed_files": files_failed,
+                "status": "completed" if not files_failed else "partial"
             }
             
             with open(log_file, 'w') as f:
                 json.dump(log_data, f, indent=2)
             
-            return {"status": "success", "symlink": source, "log_file": str(log_file)}
+            return {
+                "status": "success" if not files_failed else "partial",
+                "files_processed": len(files_processed),
+                "files_skipped": len(files_skipped),
+                "files_failed": len(files_failed),
+                "bytes_freed": bytes_freed,
+                "skipped_details": files_skipped,
+                "failed_details": files_failed,
+                "log_file": str(log_file)
+            }
             
         except Exception as ex:
-            # Rollback on error
-            if os.path.exists(temp_link):
-                os.remove(temp_link)
-            if os.path.exists(backup_dir) and not os.path.exists(source):
-                os.rename(backup_dir, source)
+            # Log the error
+            log_data = {
+                "timestamp": timestamp,
+                "operation": "finalize",
+                "source": source,
+                "destination": destination,
+                "status": "failed",
+                "error": str(ex)
+            }
+            
+            with open(log_file, 'w') as f:
+                json.dump(log_data, f, indent=2)
+            
             raise
 
 

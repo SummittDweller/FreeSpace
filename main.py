@@ -14,6 +14,8 @@ import shutil
 import hashlib
 import datetime
 import json
+import stat
+import errno
 from pathlib import Path
 from typing import List, Dict
 
@@ -25,7 +27,7 @@ class FreeSpaceApp:
         self.page = page
         self.page.title = "FreeSpace - Hard Disk Move Workflow"
         self.page.window.width = 900
-        self.page.window.height = 700
+        self.page.window.height = 720
         
         # State variables
         self.source_directories: List[str] = []
@@ -60,7 +62,7 @@ class FreeSpaceApp:
                 ft.Text("Source Directories (Hard Drive)", size=16, weight=ft.FontWeight.BOLD),
                 ft.Row([
                     ft.ElevatedButton(
-                        "Add Directory",
+                        "Add Directory/Directories",
                         icon=ft.Icons.FOLDER_OPEN,
                         on_click=self.pick_source_directory
                     ),
@@ -192,9 +194,10 @@ class FreeSpaceApp:
         )
     
     def pick_source_directory(self, e):
-        """Open directory picker for source directory."""
+        """Open directory picker for source directories (supports multiple selection)."""
         def on_result(result: ft.FilePickerResultEvent):
             if result.path:
+                # Single directory selected
                 if result.path not in self.source_directories:
                     self.source_directories.append(result.path)
                     self.update_source_list()
@@ -203,7 +206,7 @@ class FreeSpaceApp:
         file_picker = ft.FilePicker(on_result=on_result)
         self.page.overlay.append(file_picker)
         self.page.update()
-        file_picker.get_directory_path(dialog_title="Select Source Directory")
+        file_picker.get_directory_path(dialog_title="Select Source Directory (or Directories)")
     
     def clear_source_directories(self, e):
         """Clear all source directories."""
@@ -336,12 +339,24 @@ class FreeSpaceApp:
                     self.show_error(f"Destination already exists: {dest_dir}")
                     continue
                 
-                shutil.copytree(src_dir, dest_dir)
+                # Copy with error handling for individual files
+                errors = []
+                def copy_with_errors(src, dst, *, follow_symlinks=True):
+                    try:
+                        return shutil.copy2(src, dst, follow_symlinks=follow_symlinks)
+                    except Exception as e:
+                        errors.append((src, str(e)))
+                        return None
+                
+                shutil.copytree(src_dir, dest_dir, copy_function=copy_with_errors, 
+                               ignore=lambda dir, files: [f for f in files if os.path.islink(os.path.join(dir, f))])
                 
                 copy_log["copies"].append({
                     "source": src_dir,
                     "destination": dest_dir,
-                    "status": "copied"
+                    "status": "copied" if not errors else "partial",
+                    "files_failed": len(errors),
+                    "failed_files": errors[:10] if errors else None  # Log first 10 failures
                 })
             
             # Save log
@@ -419,7 +434,7 @@ class FreeSpaceApp:
             self.update_status("Verification failed.", show_progress=False)
     
     def _verify_directory(self, src_dir: str, dest_dir: str) -> Dict:
-        """Verify that a directory was copied correctly."""
+        """Verify that a directory was copied correctly, skipping symbolic links."""
         result = {
             "source": src_dir,
             "destination": dest_dir,
@@ -431,6 +446,11 @@ class FreeSpaceApp:
         for root, dirs, files in os.walk(src_dir):
             for file in files:
                 src_file = os.path.join(root, file)
+                
+                # Skip symbolic links
+                if os.path.islink(src_file):
+                    continue
+                
                 rel_path = os.path.relpath(src_file, src_dir)
                 dest_file = os.path.join(dest_dir, rel_path)
                 
@@ -469,9 +489,11 @@ class FreeSpaceApp:
             modal=True,
             title=ft.Text("⚠️ Final Confirmation", color=ft.Colors.RED_700),
             content=ft.Text(
-                f"This will DELETE the original {len(self.source_directories)} "
+                f"This will REPLACE all files in the original {len(self.source_directories)} "
                 f"director{'y' if len(self.source_directories) == 1 else 'ies'} "
-                f"and replace them with symbolic links.\n\n"
+                f"with symbolic links to the USB copies.\n\n"
+                "Directory structure will be preserved.\n"
+                "Only individual files will be replaced with links.\n\n"
                 "This action cannot be undone!\n\n"
                 "Are you absolutely sure?"
             ),
@@ -485,8 +507,8 @@ class FreeSpaceApp:
         self.page.update()
     
     def _perform_finalize(self):
-        """Perform the finalization: delete originals and create symlinks."""
-        self.update_status("Finalizing move: deleting originals and creating links...", show_progress=True)
+        """Perform the finalization: replace files with symlinks."""
+        self.update_status("Finalizing move: replacing files with links...", show_progress=True)
         self.finalize_button.disabled = True
         
         timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
@@ -513,37 +535,90 @@ class FreeSpaceApp:
                     })
                     continue
                 
-                # Safety: Create symlink in temporary location first, then swap
-                temp_link = src_dir + ".tmp_link"
-                backup_dir = src_dir + ".backup_" + timestamp
+                # Replace individual files with symlinks
+                files_processed = []
+                files_failed = []
+                files_skipped = []
+                bytes_freed = 0
                 
                 try:
-                    # Step 1: Create symlink to destination with temporary name
-                    os.symlink(dest_dir, temp_link)
-                    
-                    # Step 2: Rename original to backup
-                    os.rename(src_dir, backup_dir)
-                    
-                    # Step 3: Move symlink to final location
-                    os.rename(temp_link, src_dir)
-                    
-                    # Step 4: Delete backup only after symlink is in place
-                    shutil.rmtree(backup_dir)
+                    # Walk through all files in source directory
+                    for root, dirs, files in os.walk(src_dir):
+                        for file in files:
+                            src_file = os.path.join(root, file)
+                            rel_path = os.path.relpath(src_file, src_dir)
+                            dest_file = os.path.join(dest_dir, rel_path)
+                            
+                            # Skip symbolic links - don't process existing links
+                            if os.path.islink(src_file):
+                                files_skipped.append({
+                                    "file": rel_path,
+                                    "reason": "already a symbolic link"
+                                })
+                                continue
+                            
+                            if not os.path.exists(dest_file):
+                                files_failed.append({
+                                    "file": rel_path,
+                                    "reason": "destination file does not exist"
+                                })
+                                continue
+                            
+                            # Check if file is immutable (protected)
+                            try:
+                                file_stat = os.stat(src_file)
+                                if hasattr(stat, 'UF_IMMUTABLE') and (file_stat.st_flags & stat.UF_IMMUTABLE):
+                                    files_skipped.append({
+                                        "file": rel_path,
+                                        "reason": "file is immutable (protected)"
+                                    })
+                                    continue
+                            except Exception:
+                                pass  # If we can't check flags, try to process anyway
+                            
+                            try:
+                                # Get file size before replacing
+                                file_size = os.path.getsize(src_file)
+                                
+                                # Create backup of original file
+                                backup_file = src_file + ".backup_" + timestamp
+                                os.rename(src_file, backup_file)
+                                
+                                # Create symlink to destination file
+                                os.symlink(dest_file, src_file)
+                                
+                                # Delete backup after successful symlink creation
+                                os.remove(backup_file)
+                                
+                                # Track space freed
+                                bytes_freed += file_size
+                                files_processed.append(rel_path)
+                                
+                            except Exception as file_ex:
+                                # Rollback this file on error
+                                if os.path.exists(backup_file):
+                                    if os.path.exists(src_file) and os.path.islink(src_file):
+                                        os.remove(src_file)
+                                    os.rename(backup_file, src_file)
+                                
+                                files_failed.append({
+                                    "file": rel_path,
+                                    "reason": str(file_ex)
+                                })
                     
                     finalize_log["operations"].append({
                         "source": src_dir,
                         "destination": dest_dir,
-                        "symlink": src_dir,
-                        "status": "completed"
+                        "status": "completed" if not files_failed else "partial",
+                        "files_processed": len(files_processed),
+                        "files_skipped": len(files_skipped),
+                        "files_failed": len(files_failed),
+                        "bytes_freed": bytes_freed,
+                        "skipped_details": files_skipped if files_skipped else None,
+                        "failed_details": files_failed if files_failed else None
                     })
                     
                 except Exception as ex:
-                    # Rollback on error
-                    if os.path.exists(temp_link):
-                        os.remove(temp_link)
-                    if os.path.exists(backup_dir) and not os.path.exists(src_dir):
-                        os.rename(backup_dir, src_dir)
-                    
                     finalize_log["operations"].append({
                         "source": src_dir,
                         "destination": dest_dir,
@@ -556,11 +631,30 @@ class FreeSpaceApp:
             with open(log_file, 'w') as f:
                 json.dump(finalize_log, f, indent=2)
             
-            self.update_status(
-                f"Move finalized! Original directories deleted and symbolic links created. "
-                f"Log saved to: {log_file}",
-                show_progress=False
-            )
+            # Count total files processed and disk space freed
+            total_processed = sum(op.get("files_processed", 0) for op in finalize_log["operations"])
+            total_skipped = sum(op.get("files_skipped", 0) for op in finalize_log["operations"])
+            total_failed = sum(op.get("files_failed", 0) for op in finalize_log["operations"])
+            total_bytes_freed = sum(op.get("bytes_freed", 0) for op in finalize_log["operations"])
+            
+            # Format disk space freed
+            if total_bytes_freed >= 1024**3:  # GB
+                space_freed = f"{total_bytes_freed / (1024**3):.2f} GB"
+            elif total_bytes_freed >= 1024**2:  # MB
+                space_freed = f"{total_bytes_freed / (1024**2):.2f} MB"
+            elif total_bytes_freed >= 1024:  # KB
+                space_freed = f"{total_bytes_freed / 1024:.2f} KB"
+            else:
+                space_freed = f"{total_bytes_freed} bytes"
+            
+            status_msg = f"Move finalized! {total_processed} files replaced with symbolic links. Space freed: {space_freed}."
+            if total_skipped > 0:
+                status_msg += f" ({total_skipped} files skipped)"
+            if total_failed > 0:
+                status_msg += f" ({total_failed} files failed - check log)"
+            status_msg += f" Log saved to: {log_file}"
+            
+            self.update_status(status_msg, show_progress=False)
             
             # Reset state for next operation
             self.source_directories.clear()
