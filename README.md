@@ -4,6 +4,7 @@ A Python/Flet GUI application to support a hard disk "move with verification to 
 
 ## Recent Changes (v1.1 - January 2026)
 
+- **Auto-Complete Workflow**: New checkbox option to automatically run copy→verify→finalize in one click
 - **Session-Based Organization**: Each copy session now creates a unique subfolder structure: `from-FreeSpace/<hostname>-<timestamp>/` at the destination
 - **Real-Time Log Display**: Added live log window showing recent operations with timestamps
 - **Background Operations**: Verify operation now runs in background thread (no more UI freezing)
@@ -89,6 +90,19 @@ See `freespace_api.py` for more details.
 
 ### Workflow
 
+#### Quick Start (Auto-Complete Mode)
+
+1. **Add Source Directories**: Select directories you want to move
+2. **Select Destination**: Choose the base destination folder
+3. **Enable Auto-Complete**: Check "Auto-complete workflow" checkbox
+4. **One-Click Process**: Click "1. Copy to Destination" - the app will automatically:
+   - Copy all directories to the destination
+   - Verify all copied files
+   - Delete originals and create symbolic links
+   - Show progress for each step in the real-time log
+
+#### Manual Step-by-Step Mode
+
 1. **Add Source Directories**: Click "Add Directory/Directories" to select directories from your hard drive that you want to move to external storage. The file picker will keep opening after each selection, allowing you to select multiple directories in succession. The picker stays focused on the parent directory of your last selection for convenience. Click Cancel in the file picker when you're finished selecting directories.
 
 2. **Select Destination**: Click "Select Destination Directory" to choose the base destination folder on your external storage. The app will automatically create a session-specific subdirectory: `from-FreeSpace/<hostname>-<timestamp>/` where all files will be copied.
@@ -105,6 +119,11 @@ See `freespace_api.py` for more details.
    - Immutable files (files with the `uchg` flag on macOS) are automatically skipped in file-level mode
    - Already-existing symbolic links are skipped
    - The log reports how many items were processed, skipped, or failed
+
+### Workflow Options
+
+- **Auto-complete workflow**: Automatically runs verify and finalize after copy completes. Perfect for routine operations when you're confident about the source and destination.
+- **Replace each file with individual symlinks**: Uses file-level symlinks instead of directory-level. Useful when you need to preserve the original directory structure with individual file links.
 
 ### Safety Features
 

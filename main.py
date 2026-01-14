@@ -161,7 +161,13 @@ class FreeSpaceApp:
             )
         )
         
-        # Symlink options
+        # Workflow options
+        self.auto_complete_checkbox = ft.Checkbox(
+            label="Auto-complete workflow (automatically verify and finalize after copy)",
+            value=False,
+            tooltip="Check this to automatically run verify and finalize steps after copying completes"
+        )
+        
         self.file_level_symlinks_checkbox = ft.Checkbox(
             label="Replace each file with individual symlinks (default: replace entire directory)",
             value=False,
@@ -176,6 +182,7 @@ class FreeSpaceApp:
                     self.finalize_button,
                 ], alignment=ft.MainAxisAlignment.SPACE_EVENLY),
                 ft.Divider(height=10, color=ft.Colors.TRANSPARENT),
+                self.auto_complete_checkbox,
                 self.file_level_symlinks_checkbox,
             ]),
             padding=20,
@@ -380,18 +387,42 @@ class FreeSpaceApp:
             self.show_error("Please select source and destination directories.")
             return
         
+        # Check if auto-complete is enabled
+        auto_complete = self.auto_complete_checkbox.value
+        
         # Confirm action
-        confirmed = await self.ask_yes_no(
-            "Confirm Copy",
-            f"Copy {len(self.source_directories)} director{'y' if len(self.source_directories) == 1 else 'ies'} "
-            f"to {self.destination_directory}?\n\nThis may take a while depending on the size."
-        )
+        if auto_complete:
+            confirmed = await self.ask_yes_no(
+                "Confirm Auto-Complete Workflow",
+                f"This will automatically:\n"
+                f"1. Copy {len(self.source_directories)} director{'y' if len(self.source_directories) == 1 else 'ies'} to {self.destination_directory}\n"
+                f"2. Verify all copied files\n"
+                f"3. Delete originals and create symbolic links\n\n"
+                f"This is a complete workflow that will modify your original directories!\n\n"
+                f"Are you sure you want to proceed?"
+            )
+        else:
+            confirmed = await self.ask_yes_no(
+                "Confirm Copy",
+                f"Copy {len(self.source_directories)} director{'y' if len(self.source_directories) == 1 else 'ies'} "
+                f"to {self.destination_directory}?\n\nThis may take a while depending on the size."
+            )
         
         if confirmed:
             # Run the copy operation in a background thread to avoid blocking UI
             def run_copy():
                 try:
                     self._perform_copy()
+                    # If auto-complete is enabled, run verify and finalize
+                    if auto_complete and not self.copy_button.disabled:
+                        # Copy succeeded (button is still disabled means it worked)
+                        self.log_message("Auto-complete: Starting verification...")
+                        self._perform_verify()
+                        # Check if verify succeeded
+                        if not self.finalize_button.disabled:
+                            # Verify succeeded, now finalize
+                            self.log_message("Auto-complete: Starting finalization...")
+                            self._perform_finalize()
                 except Exception as ex:
                     print(f"Exception during copy: {ex}")
                     import traceback

@@ -5,6 +5,11 @@ All notable changes to FreeSpace will be documented in this file.
 ## [1.1.0] - 2026-01-14
 
 ### Added
+- **Auto-Complete Workflow Option**: New checkbox to automatically run the complete copy→verify→finalize workflow with one button click
+  - When enabled, clicking "Copy to Destination" automatically proceeds through all three steps
+  - Enhanced confirmation dialog clearly explains what will happen
+  - Real-time log messages show progress through each automatic step
+  - If any step fails, the automatic sequence stops safely
 - **Session-Based Organization**: Each copy session now automatically creates a unique subfolder structure at the destination: `from-FreeSpace/<hostname>-<timestamp>/`
   - Hostname is extracted from the machine running FreeSpace
   - Timestamp format: `YYYY-MM-DD_HHMMSS` for easy sorting and identification
@@ -26,7 +31,7 @@ All notable changes to FreeSpace will be documented in this file.
   - Added `os.access()` checks to skip unreadable files before attempting to read them
   - Added `onerror` handler to `os.walk()` to gracefully handle inaccessible directories
   - Tracks skipped files separately from mismatches in verification logs
-- **Window Size**: Increased from 720px to 820px height to accommodate new log display area
+- **Window Size**: Increased from 720px to 1000px height to accommodate new features and ensure all content is visible
 - **Status Messages**: More informative status messages with real-time progress updates
 - **Log Structure**: Added "mode" field to finalize logs indicating which symlink mode was used
 
