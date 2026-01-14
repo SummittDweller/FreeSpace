@@ -18,6 +18,7 @@ import stat
 import errno
 import asyncio
 import threading
+import socket
 from pathlib import Path
 from typing import List, Dict
 
@@ -29,11 +30,15 @@ class FreeSpaceApp:
         self.page = page
         self.page.title = "FreeSpace - Hard Disk Move Workflow"
         self.page.window.width = 900
-        self.page.window.height = 720
+        self.page.window.height = 1000
+        self.page.window.min_width = 900
+        self.page.window.min_height = 900
+        self.page.window.resizable = True
         
         # State variables
         self.source_directories: List[str] = []
         self.destination_directory: str = ""
+        self.actual_destination_directory: str = ""  # Will be destination + from-FreeSpace/hostname-timestamp
         self.log_directory = Path.home() / "freespace_logs"
         self.log_directory.mkdir(exist_ok=True)
         
@@ -41,6 +46,7 @@ class FreeSpaceApp:
         self.source_list = None
         self.destination_text = None
         self.status_text = None
+        self.log_text_area = None
         self.progress_bar = None
         self.copy_button = None
         self.verify_button = None
@@ -155,12 +161,23 @@ class FreeSpaceApp:
             )
         )
         
+        # Symlink options
+        self.file_level_symlinks_checkbox = ft.Checkbox(
+            label="Replace each file with individual symlinks (default: replace entire directory)",
+            value=False,
+            tooltip="Check this to create a symlink for each copied file instead of replacing the entire directory with one symlink"
+        )
+        
         action_section = ft.Container(
-            content=ft.Row([
-                self.copy_button,
-                self.verify_button,
-                self.finalize_button,
-            ], alignment=ft.MainAxisAlignment.SPACE_EVENLY),
+            content=ft.Column([
+                ft.Row([
+                    self.copy_button,
+                    self.verify_button,
+                    self.finalize_button,
+                ], alignment=ft.MainAxisAlignment.SPACE_EVENLY),
+                ft.Divider(height=10, color=ft.Colors.TRANSPARENT),
+                self.file_level_symlinks_checkbox,
+            ]),
             padding=20,
         )
         
@@ -180,6 +197,18 @@ class FreeSpaceApp:
             selectable=True
         )
         
+        # Log text area for real-time updates
+        self.log_text_area = ft.TextField(
+            value="",
+            multiline=True,
+            read_only=True,
+            min_lines=6,
+            max_lines=6,
+            border_color=ft.Colors.GREY_400,
+            text_size=12,
+            expand=True,
+        )
+        
         # Status section
         status_section = ft.Container(
             content=ft.Column([
@@ -194,6 +223,8 @@ class FreeSpaceApp:
                 ]),
                 self.progress_bar,
                 self.status_text,
+                ft.Text("Recent Log:", size=14, weight=ft.FontWeight.BOLD),
+                self.log_text_area,
             ]),
             padding=10,
             border=ft.Border.all(1, ft.Colors.GREY_300),
@@ -294,9 +325,19 @@ class FreeSpaceApp:
         
         if path:
             self.destination_directory = path
-            self.destination_text.value = path
+            
+            # Create the subdirectory structure: from-FreeSpace/<hostname>-<timestamp>
+            hostname = socket.gethostname().split('.')[0]  # Get short hostname
+            timestamp = datetime.datetime.now().strftime("%Y-%m-%d_%H%M%S")
+            session_dir = f"{hostname}-{timestamp}"
+            self.actual_destination_directory = os.path.join(path, "from-FreeSpace", session_dir)
+            
+            # Create the directory
+            os.makedirs(self.actual_destination_directory, exist_ok=True)
+            
+            self.destination_text.value = f"{path}\n→ from-FreeSpace/{session_dir}/"
             self.destination_text.italic = False
-            self.destination_text.color = ft.Colors.BLACK
+            self.destination_text.color = ft.Colors.BLUE_700
             self.update_button_states()
             self.page.update()
     
@@ -312,6 +353,17 @@ class FreeSpaceApp:
         """Update status message and progress bar."""
         self.status_text.value = message
         self.progress_bar.visible = show_progress
+        self.page.update()
+    
+    def log_message(self, message: str):
+        """Add a message to the log text area with timestamp."""
+        timestamp = datetime.datetime.now().strftime("%H:%M:%S")
+        log_entry = f"[{timestamp}] {message}\n"
+        self.log_text_area.value += log_entry
+        # Auto-scroll by keeping only last ~10 lines
+        lines = self.log_text_area.value.split('\n')
+        if len(lines) > 15:
+            self.log_text_area.value = '\n'.join(lines[-15:])
         self.page.update()
     
     def calculate_checksum(self, file_path: str) -> str:
@@ -351,6 +403,7 @@ class FreeSpaceApp:
     def _perform_copy(self):
         """Perform the actual copy operation."""
         self.update_status("Copying directories to destination...", show_progress=True)
+        self.log_message("Starting copy operation...")
         self.copy_button.disabled = True
         self.page.update()  # Force UI update before starting long operation
         
@@ -360,7 +413,7 @@ class FreeSpaceApp:
         copy_log = {
             "timestamp": timestamp,
             "source_directories": self.source_directories,
-            "destination_directory": self.destination_directory,
+            "destination_directory": self.actual_destination_directory,
             "copies": []
         }
         
@@ -373,12 +426,20 @@ class FreeSpaceApp:
                 # Create the full path at destination by preserving the directory structure
                 # Remove leading slash to make it relative, then join with destination
                 rel_structure = str(src_path).lstrip('/')
-                dest_dir = os.path.join(self.destination_directory, rel_structure)
+                dest_dir = os.path.join(self.actual_destination_directory, rel_structure)
                 
                 self.update_status(f"Copying: {src_dir}...", show_progress=True)
+                self.log_message(f"Copying {os.path.basename(src_dir)}...")
                 
                 if os.path.exists(dest_dir):
-                    self.show_error(f"Destination already exists: {dest_dir}")
+                    error_msg = f"Destination already exists: {dest_dir}"
+                    self.log_message(f"SKIPPED: {os.path.basename(src_dir)} (already exists)")
+                    copy_log["copies"].append({
+                        "source": src_dir,
+                        "destination": dest_dir,
+                        "status": "skipped",
+                        "reason": "destination already exists"
+                    })
                     continue
                 
                 # Copy with error handling for individual files
@@ -393,6 +454,8 @@ class FreeSpaceApp:
                 shutil.copytree(src_dir, dest_dir, copy_function=copy_with_errors, 
                                ignore=lambda dir, files: [f for f in files if os.path.islink(os.path.join(dir, f))])
                 
+                self.log_message(f"✓ Copied {os.path.basename(src_dir)}")
+                
                 copy_log["copies"].append({
                     "source": src_dir,
                     "destination": dest_dir,
@@ -406,23 +469,25 @@ class FreeSpaceApp:
                 json.dump(copy_log, f, indent=2)
             
             # Copy log to destination as well
-            dest_log_dir = os.path.join(self.destination_directory, "freespace_logs")
+            dest_log_dir = os.path.join(self.actual_destination_directory, "freespace_logs")
             os.makedirs(dest_log_dir, exist_ok=True)
             dest_log_file = os.path.join(dest_log_dir, f"copy_log_{timestamp}.json")
             shutil.copy2(log_file, dest_log_file)
             
+            self.log_message("Copy operation completed!")
             self.update_status(f"Copy completed! Log saved to: {log_file} and {dest_log_file}", show_progress=False)
             self.verify_button.disabled = False
             self.page.update()
             
         except Exception as ex:
+            self.log_message(f"ERROR: {str(ex)}")
             self.show_error(f"Error during copy: {str(ex)}")
             self.copy_button.disabled = False
             self.update_status("Copy failed.", show_progress=False)
     
-    def verify_copy(self, e):
+    async def verify_copy(self, e):
         """Verify that copied files match originals."""
-        if not self.source_directories or not self.destination_directory:
+        if not self.source_directories or not self.actual_destination_directory:
             self.show_error("No copy operation to verify.")
             return
         
@@ -444,12 +509,14 @@ class FreeSpaceApp:
                 # Use full path structure like in copy
                 src_path = Path(src_dir).resolve()
                 rel_structure = str(src_path).lstrip('/')
-                dest_dir = os.path.join(self.destination_directory, rel_structure)
+                dest_dir = os.path.join(self.actual_destination_directory, rel_structure)
                 
                 self.update_status(f"Verifying: {src_dir}...", show_progress=True)
+                self.log_message(f"Verifying {os.path.basename(src_dir)}...")
                 
                 if not os.path.exists(dest_dir):
                     all_verified = False
+                    self.log_message(f"✗ FAILED: {os.path.basename(src_dir)} (destination not found)")
                     verify_log["verifications"].append({
                         "source": src_dir,
                         "destination": dest_dir,
@@ -464,27 +531,37 @@ class FreeSpaceApp:
                 
                 if verification_result["status"] != "verified":
                     all_verified = False
+                    self.log_message(f"✗ FAILED: {os.path.basename(src_dir)} ({len(verification_result.get('mismatches', []))} mismatches)")
+                else:
+                    skipped_count = len(verification_result.get('skipped', []))
+                    if skipped_count > 0:
+                        self.log_message(f"✓ Verified {os.path.basename(src_dir)} ({skipped_count} files skipped)")
+                    else:
+                        self.log_message(f"✓ Verified {os.path.basename(src_dir)}")
             
             # Save log locally
             with open(log_file, 'w') as f:
                 json.dump(verify_log, f, indent=2)
             
             # Copy log to destination
-            dest_log_dir = os.path.join(self.destination_directory, "freespace_logs")
+            dest_log_dir = os.path.join(self.actual_destination_directory, "freespace_logs")
             os.makedirs(dest_log_dir, exist_ok=True)
             dest_log_file = os.path.join(dest_log_dir, f"verify_log_{timestamp}.json")
             shutil.copy2(log_file, dest_log_file)
             
             if all_verified:
+                self.log_message("Verification completed successfully!")
                 self.update_status(f"Verification successful! Log saved to: {log_file} and {dest_log_file}", show_progress=False)
                 self.finalize_button.disabled = False
             else:
+                self.log_message("Verification completed with errors")
                 self.update_status(f"Verification failed! Check log: {log_file} and {dest_log_file}", show_progress=False)
                 self.verify_button.disabled = False
             
             self.page.update()
             
         except Exception as ex:
+            self.log_message(f"ERROR: {str(ex)}")
             self.show_error(f"Error during verification: {str(ex)}")
             self.verify_button.disabled = False
             self.update_status("Verification failed.", show_progress=False)
@@ -495,16 +572,29 @@ class FreeSpaceApp:
             "source": src_dir,
             "destination": dest_dir,
             "status": "verified",
-            "mismatches": []
+            "mismatches": [],
+            "skipped": []
         }
         
         # Check all files exist and match
-        for root, dirs, files in os.walk(src_dir):
+        for root, dirs, files in os.walk(src_dir, onerror=lambda e: None):
+            # Filter out directories we can't access
+            dirs[:] = [d for d in dirs if os.access(os.path.join(root, d), os.R_OK)]
+            
             for file in files:
                 src_file = os.path.join(root, file)
                 
                 # Skip symbolic links
                 if os.path.islink(src_file):
+                    continue
+                
+                # Check if we can read the file
+                if not os.access(src_file, os.R_OK):
+                    rel_path = os.path.relpath(src_file, src_dir)
+                    result["skipped"].append({
+                        "file": rel_path,
+                        "reason": "permission denied"
+                    })
                     continue
                 
                 rel_path = os.path.relpath(src_file, src_dir)
@@ -518,12 +608,19 @@ class FreeSpaceApp:
                     })
                     continue
                 
-                # Check file sizes match
-                if os.path.getsize(src_file) != os.path.getsize(dest_file):
-                    result["status"] = "failed"
-                    result["mismatches"].append({
+                try:
+                    # Check file sizes match
+                    if os.path.getsize(src_file) != os.path.getsize(dest_file):
+                        result["status"] = "failed"
+                        result["mismatches"].append({
+                            "file": rel_path,
+                            "reason": "size mismatch"
+                        })
+                        continue
+                except (OSError, PermissionError) as e:
+                    result["skipped"].append({
                         "file": rel_path,
-                        "reason": "size mismatch"
+                        "reason": f"cannot access: {str(e)}"
                     })
                     continue
         
@@ -534,14 +631,22 @@ class FreeSpaceApp:
     
     async def finalize_move(self, e):
         """Delete original directories and create symbolic links."""
+        # Determine which mode we're using
+        file_level = self.file_level_symlinks_checkbox.value
+        
+        if file_level:
+            mode_description = "Files will be replaced with individual symlinks (directory structure preserved)."
+        else:
+            mode_description = "Each entire directory will be replaced with a single symlink."
+        
         # Strong confirmation required
         confirmed = await self.ask_yes_no(
             "⚠️ Final Confirmation",
-            f"This will REPLACE all files in the original {len(self.source_directories)} "
+            f"This will DELETE the original {len(self.source_directories)} "
             f"director{'y' if len(self.source_directories) == 1 else 'ies'} "
-            f"with symbolic links to the destination copies.\n\n"
-            "Directory structure will be preserved.\n"
-            "Only individual files will be replaced with links.\n\n"
+            f"and replace {'it' if len(self.source_directories) == 1 else 'them'} with symbolic {'link' if len(self.source_directories) == 1 else 'links'} "
+            f"to the destination copies.\n\n"
+            f"{mode_description}\n\n"
             "This action cannot be undone!\n\n"
             "Are you absolutely sure?"
         )
@@ -560,8 +665,15 @@ class FreeSpaceApp:
             thread.start()
     
     def _perform_finalize(self):
-        """Perform the finalization: replace files with symlinks to destination."""
-        self.update_status("Finalizing move: replacing files with links...", show_progress=True)
+        """Perform the finalization based on selected mode."""
+        if self.file_level_symlinks_checkbox.value:
+            self._perform_finalize_file_level()
+        else:
+            self._perform_finalize_directory_level()
+    
+    def _perform_finalize_directory_level(self):
+        """Perform the finalization: replace entire directories with symlinks to destination."""
+        self.update_status("Finalizing move: replacing directories with links...", show_progress=True)
         self.finalize_button.disabled = True
         self.page.update()  # Force UI update before starting long operation
         
@@ -570,6 +682,7 @@ class FreeSpaceApp:
         
         finalize_log = {
             "timestamp": timestamp,
+            "mode": "directory_level",
             "operations": []
         }
         
@@ -579,6 +692,147 @@ class FreeSpaceApp:
                 src_path = Path(src_dir).resolve()
                 rel_structure = str(src_path).lstrip('/')
                 dest_dir = os.path.join(self.destination_directory, rel_structure)
+                
+                self.update_status(f"Finalizing: {src_dir}...", show_progress=True)
+                
+                if not os.path.exists(dest_dir):
+                    finalize_log["operations"].append({
+                        "source": src_dir,
+                        "destination": dest_dir,
+                        "status": "skipped",
+                        "reason": "destination does not exist"
+                    })
+                    continue
+                
+                # Check if source is already a symlink
+                if os.path.islink(src_dir):
+                    finalize_log["operations"].append({
+                        "source": src_dir,
+                        "destination": dest_dir,
+                        "status": "skipped",
+                        "reason": "source is already a symbolic link"
+                    })
+                    continue
+                
+                try:
+                    # Calculate space to be freed
+                    bytes_freed = 0
+                    for root, dirs, files in os.walk(src_dir):
+                        for file in files:
+                            file_path = os.path.join(root, file)
+                            if not os.path.islink(file_path):
+                                try:
+                                    bytes_freed += os.path.getsize(file_path)
+                                except (OSError, PermissionError):
+                                    pass
+                    
+                    # Create backup directory name
+                    backup_dir = src_dir + ".backup_" + timestamp
+                    
+                    # Rename original directory to backup
+                    os.rename(src_dir, backup_dir)
+                    
+                    try:
+                        # Create symlink at original location pointing to destination
+                        os.symlink(dest_dir, src_dir)
+                        
+                        # Delete backup after successful symlink creation
+                        shutil.rmtree(backup_dir)
+                        
+                        finalize_log["operations"].append({
+                            "source": src_dir,
+                            "destination": dest_dir,
+                            "status": "completed",
+                            "bytes_freed": bytes_freed
+                        })
+                        
+                    except Exception as symlink_ex:
+                        # Rollback on error: restore backup
+                        if os.path.exists(src_dir) and os.path.islink(src_dir):
+                            os.remove(src_dir)
+                        os.rename(backup_dir, src_dir)
+                        raise symlink_ex
+                    
+                except Exception as ex:
+                    finalize_log["operations"].append({
+                        "source": src_dir,
+                        "destination": dest_dir,
+                        "status": "failed",
+                        "error": str(ex)
+                    })
+                    raise
+            
+            # Save log locally
+            with open(log_file, 'w') as f:
+                json.dump(finalize_log, f, indent=2)
+            
+            # Copy log to destination
+            dest_log_dir = os.path.join(self.actual_destination_directory, "freespace_logs")
+            os.makedirs(dest_log_dir, exist_ok=True)
+            dest_log_file = os.path.join(dest_log_dir, f"finalize_log_{timestamp}.json")
+            shutil.copy2(log_file, dest_log_file)
+            
+            # Count successful operations and total bytes freed
+            total_completed = sum(1 for op in finalize_log["operations"] if op.get("status") == "completed")
+            total_failed = sum(1 for op in finalize_log["operations"] if op.get("status") == "failed")
+            total_skipped = sum(1 for op in finalize_log["operations"] if op.get("status") == "skipped")
+            total_bytes_freed = sum(op.get("bytes_freed", 0) for op in finalize_log["operations"])
+            
+            # Format disk space freed
+            if total_bytes_freed >= 1024**3:  # GB
+                space_freed = f"{total_bytes_freed / (1024**3):.2f} GB"
+            elif total_bytes_freed >= 1024**2:  # MB
+                space_freed = f"{total_bytes_freed / (1024**2):.2f} MB"
+            elif total_bytes_freed >= 1024:  # KB
+                space_freed = f"{total_bytes_freed / 1024:.2f} KB"
+            else:
+                space_freed = f"{total_bytes_freed} bytes"
+            
+            status_msg = f"Move finalized! {total_completed} director{'y' if total_completed == 1 else 'ies'} replaced with symbolic links. Space freed: {space_freed}."
+            if total_skipped > 0:
+                status_msg += f" ({total_skipped} skipped)"
+            if total_failed > 0:
+                status_msg += f" ({total_failed} failed - check log)"
+            status_msg += f" Logs saved to: {log_file} and {dest_log_file}"
+            
+            self.update_status(status_msg, show_progress=False)
+            
+            # Reset state for next operation
+            self.source_directories.clear()
+            self.destination_directory = ""
+            self.actual_destination_directory = ""
+            self.update_source_list()
+            self.destination_text.value = "No destination selected"
+            self.destination_text.italic = True
+            self.destination_text.color = ft.Colors.GREY_700
+            self.update_button_states()
+            
+        except Exception as ex:
+            self.show_error(f"Error during finalization: {str(ex)}")
+            self.finalize_button.disabled = False
+            self.update_status("Finalization failed.", show_progress=False)
+    
+    def _perform_finalize_file_level(self):
+        """Perform the finalization: replace individual files with symlinks to destination."""
+        self.update_status("Finalizing move: replacing files with links...", show_progress=True)
+        self.finalize_button.disabled = True
+        self.page.update()  # Force UI update before starting long operation
+        
+        timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+        log_file = self.log_directory / f"finalize_log_{timestamp}.json"
+        
+        finalize_log = {
+            "timestamp": timestamp,
+            "mode": "file_level",
+            "operations": []
+        }
+        
+        try:
+            for src_dir in self.source_directories:
+                # Use full path structure like in copy
+                src_path = Path(src_dir).resolve()
+                rel_structure = str(src_path).lstrip('/')
+                dest_dir = os.path.join(self.actual_destination_directory, rel_structure)
                 
                 self.update_status(f"Finalizing: {src_dir}...", show_progress=True)
                 
@@ -652,6 +906,7 @@ class FreeSpaceApp:
                                 
                             except Exception as file_ex:
                                 # Rollback this file on error
+                                backup_file = src_file + ".backup_" + timestamp
                                 if os.path.exists(backup_file):
                                     if os.path.exists(src_file) and os.path.islink(src_file):
                                         os.remove(src_file)
@@ -688,7 +943,7 @@ class FreeSpaceApp:
                 json.dump(finalize_log, f, indent=2)
             
             # Copy log to destination
-            dest_log_dir = os.path.join(self.destination_directory, "freespace_logs")
+            dest_log_dir = os.path.join(self.actual_destination_directory, "freespace_logs")
             os.makedirs(dest_log_dir, exist_ok=True)
             dest_log_file = os.path.join(dest_log_dir, f"finalize_log_{timestamp}.json")
             shutil.copy2(log_file, dest_log_file)
@@ -721,6 +976,7 @@ class FreeSpaceApp:
             # Reset state for next operation
             self.source_directories.clear()
             self.destination_directory = ""
+            self.actual_destination_directory = ""
             self.update_source_list()
             self.destination_text.value = "No destination selected"
             self.destination_text.italic = True

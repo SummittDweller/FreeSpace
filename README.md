@@ -2,14 +2,29 @@
 
 A Python/Flet GUI application to support a hard disk "move with verification to external storage" workflow to free up hard drive space.
 
+## Recent Changes (v1.1 - January 2026)
+
+- **Session-Based Organization**: Each copy session now creates a unique subfolder structure: `from-FreeSpace/<hostname>-<timestamp>/` at the destination
+- **Real-Time Log Display**: Added live log window showing recent operations with timestamps
+- **Background Operations**: Verify operation now runs in background thread (no more UI freezing)
+- **Flexible Symlink Options**: Choose between:
+  - **Default**: Replace entire directory with single symlink (faster, simpler)
+  - **File-level**: Replace each file with individual symlinks (preserves directory structure)
+- **Better Error Handling**: Gracefully handles permission errors and already-existing destinations
+- **Skipped Files Tracking**: Operations log which files were skipped due to permissions or other issues
+
 ## Features
 
 - **Directory Selection**: Easy selection of one or more source directories from your hard drive
 - **External Storage Destination**: Select any external storage (USB, network drive, external HDD/SSD) as the destination
+- **Organized Destination Structure**: Automatically creates `from-FreeSpace/<hostname>-<timestamp>/` subdirectories for each session
 - **Full Path Preservation**: The complete directory structure is preserved at the destination, maintaining the full path hierarchy
-- **Safe Copy**: Copy directories to external storage with progress indication
+- **Safe Copy**: Copy directories to external storage with progress indication and real-time logging
 - **Verification**: Verify that all files were copied correctly (checks existence and file sizes)
-- **Symbolic Links**: Delete original directories and replace them with symbolic links pointing to the USB location
+- **Flexible Symbolic Links**: 
+  - **Default Mode**: Replace entire directory with a single symlink (recommended)
+  - **File-Level Mode**: Replace each file individually with symlinks while preserving directory structure
+- **Real-Time Monitoring**: Live log display shows current operations and completion status
 - **Detailed Logging**: Timestamped JSON logs for all operations (copy, verify, finalize)
 - **User Confirmations**: Multiple confirmation dialogs to prevent accidental data loss
 
@@ -74,17 +89,22 @@ See `freespace_api.py` for more details.
 
 ### Workflow
 
-1. **Add Source Directories**: Click "Add Directory/Directories" to select directories from your hard drive that you want to move to USB storage. The file picker will keep opening after each selection, allowing you to select multiple directories in succession. The picker stays focused on the parent directory of your last selection for convenience. Click Cancel in the file picker when you're finished selecting directories.
+1. **Add Source Directories**: Click "Add Directory/Directories" to select directories from your hard drive that you want to move to external storage. The file picker will keep opening after each selection, allowing you to select multiple directories in succession. The picker stays focused on the parent directory of your last selection for convenience. Click Cancel in the file picker when you're finished selecting directories.
 
-2. **Select Destination**: Click "Select Destination Directory" to choose the destination folder on your external storage (USB drive, network drive, external HDD/SSD, etc.).
+2. **Select Destination**: Click "Select Destination Directory" to choose the base destination folder on your external storage. The app will automatically create a session-specific subdirectory: `from-FreeSpace/<hostname>-<timestamp>/` where all files will be copied.
 
-3. **Copy to Destination**: Click "1. Copy to Destination" to copy all selected directories to the external storage destination. This preserves the complete directory structure by maintaining the full path hierarchy at the destination.
+3. **Copy to Destination**: Click "1. Copy to Destination" to copy all selected directories to the external storage. This preserves the complete directory structure by maintaining the full path hierarchy. Watch the real-time log for progress updates. If a destination already exists, it will be skipped and logged.
 
-4. **Verify Copy**: Click "2. Verify Copy" to verify that all files were copied correctly. This checks file existence and sizes.
+4. **Verify Copy**: Click "2. Verify Copy" to verify that all files were copied correctly. This checks file existence and sizes. The verification runs in the background and logs progress in real-time. Files that cannot be accessed due to permissions are skipped and logged.
 
-5. **Replace Files with Links**: Click "3. Delete & Create Links" to replace individual files with symbolic links pointing to the destination location. Directory structure is preserved; only the actual files are replaced with links.
+5. **Replace with Links**: Click "3. Delete & Create Links" to finalize the move:
+   - **Default Mode (Unchecked)**: Replaces each entire directory with a single symbolic link to the destination copy. This is faster and simpler.
+   - **File-Level Mode (Checked)**: Replaces individual files with symbolic links while preserving the directory structure. Check the "Replace each file with individual symlinks" option if you need this behavior.
 
-   **Important**: Immutable files (files with the `uchg` flag on macOS, commonly used by apps to protect important data) are automatically skipped and left unchanged. The log will report how many files were skipped.
+   **Important**: 
+   - Immutable files (files with the `uchg` flag on macOS) are automatically skipped in file-level mode
+   - Already-existing symbolic links are skipped
+   - The log reports how many items were processed, skipped, or failed
 
 ### Safety Features
 
@@ -97,7 +117,30 @@ See `freespace_api.py` for more details.
 
 Logs are stored in two locations:
 1. **Local**: `~/freespace_logs/` on your computer
-2. **Destination**: `<destination>/freespace_logs/` on your external storage
+2. **Destination**: `<destination>/from-FreeSpace/<hostname>-<timestamp>/freespace_logs/` on your external storage
+
+The real-time log display in the app shows the most recent 15 operations with timestamps for easy monitoring.
+
+Log files include:
+- `copy_log_<timestamp>.json` - Details of copy operations
+- `verify_log_<timestamp>.json` - Verification results including any mismatches or skipped files
+- `finalize_log_<timestamp>.json` - Finalization details including space freed and any errors
+
+## Troubleshooting
+
+### Verification Fails
+- Check the log files for specific files that failed verification
+- Files with permission errors are automatically skipped and logged
+- Re-run verification after addressing any issues
+
+### Destination Already Exists
+- If you re-run a copy, already-existing destinations are skipped and logged
+- Each session creates a new timestamped folder to avoid conflicts
+
+### Permission Denied Errors
+- Some system files may have restricted permissions
+- These are automatically skipped and logged
+- Review the log's "skipped" section to see which files were affected
 
 Log files include:
 - `copy_log_YYYYMMDD_HHMMSS.json` - Copy operation details
