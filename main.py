@@ -34,6 +34,7 @@ class FreeSpaceApp:
         self.page.window.min_width = 900
         self.page.window.min_height = 900
         self.page.window.resizable = True
+        self.page.scroll = ft.ScrollMode.AUTO
         
         # State variables
         self.source_directories: List[str] = []
@@ -64,7 +65,7 @@ class FreeSpaceApp:
         # Title
         title = ft.Text(
             "FreeSpace - Hard Disk Move Workflow",
-            size=24,
+            size=20,
             weight=ft.FontWeight.BOLD,
             color=ft.Colors.BLUE_700
         )
@@ -181,11 +182,11 @@ class FreeSpaceApp:
                     self.verify_button,
                     self.finalize_button,
                 ], alignment=ft.MainAxisAlignment.SPACE_EVENLY),
-                ft.Divider(height=10, color=ft.Colors.TRANSPARENT),
+                ft.Divider(height=5, color=ft.Colors.TRANSPARENT),
                 self.auto_complete_checkbox,
                 self.file_level_symlinks_checkbox,
-            ]),
-            padding=20,
+            ], spacing=5),
+            padding=10,
         )
         
         # Progress bar
@@ -243,13 +244,13 @@ class FreeSpaceApp:
             ft.Container(
                 content=ft.Column([
                     title,
-                    ft.Divider(),
+                    ft.Divider(height=1),
                     source_section,
                     destination_section,
                     action_section,
                     status_section,
-                ], scroll=ft.ScrollMode.AUTO),
-                padding=20,
+                ], scroll=ft.ScrollMode.AUTO, spacing=10),
+                padding=15,
             )
         )
     
@@ -409,20 +410,13 @@ class FreeSpaceApp:
             )
         
         if confirmed:
+            # Store auto_complete state for use in background thread
+            self._auto_complete_mode = auto_complete
+            
             # Run the copy operation in a background thread to avoid blocking UI
             def run_copy():
                 try:
                     self._perform_copy()
-                    # If auto-complete is enabled, run verify and finalize
-                    if auto_complete and not self.copy_button.disabled:
-                        # Copy succeeded (button is still disabled means it worked)
-                        self.log_message("Auto-complete: Starting verification...")
-                        self._perform_verify()
-                        # Check if verify succeeded
-                        if not self.finalize_button.disabled:
-                            # Verify succeeded, now finalize
-                            self.log_message("Auto-complete: Starting finalization...")
-                            self._perform_finalize()
                 except Exception as ex:
                     print(f"Exception during copy: {ex}")
                     import traceback
@@ -510,6 +504,11 @@ class FreeSpaceApp:
             self.verify_button.disabled = False
             self.page.update()
             
+            # If auto-complete is enabled, continue with verify
+            if hasattr(self, '_auto_complete_mode') and self._auto_complete_mode:
+                self.log_message("Auto-complete: Starting verification...")
+                self._perform_verify()
+            
         except Exception as ex:
             self.log_message(f"ERROR: {str(ex)}")
             self.show_error(f"Error during copy: {str(ex)}")
@@ -522,8 +521,24 @@ class FreeSpaceApp:
             self.show_error("No copy operation to verify.")
             return
         
+        # Run verification in background thread
+        def run_verify():
+            try:
+                self._perform_verify()
+            except Exception as ex:
+                print(f"Exception during verify: {ex}")
+                import traceback
+                traceback.print_exc()
+        
+        thread = threading.Thread(target=run_verify, daemon=True)
+        thread.start()
+    
+    def _perform_verify(self):
+        """Perform the actual verification operation."""
         self.update_status("Verifying copied files...", show_progress=True)
+        self.log_message("Starting verification...")
         self.verify_button.disabled = True
+        self.page.update()
         
         timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
         log_file = self.log_directory / f"verify_log_{timestamp}.json"
@@ -584,6 +599,11 @@ class FreeSpaceApp:
                 self.log_message("Verification completed successfully!")
                 self.update_status(f"Verification successful! Log saved to: {log_file} and {dest_log_file}", show_progress=False)
                 self.finalize_button.disabled = False
+                
+                # If auto-complete is enabled, continue with finalize
+                if hasattr(self, '_auto_complete_mode') and self._auto_complete_mode:
+                    self.log_message("Auto-complete: Starting finalization...")
+                    self._perform_finalize()
             else:
                 self.log_message("Verification completed with errors")
                 self.update_status(f"Verification failed! Check log: {log_file} and {dest_log_file}", show_progress=False)
@@ -1086,7 +1106,7 @@ class FreeSpaceApp:
     
     def copy_status_to_clipboard(self, e):
         """Copy the current status text to clipboard."""
-        self.page.set_clipboard(self.status_text.value)
+        self.page.clipboard.set(self.status_text.value)
         # Show a brief confirmation
         original_value = self.status_text.value
         self.status_text.value = "✓ Status copied to clipboard!"
