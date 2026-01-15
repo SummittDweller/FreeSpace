@@ -563,6 +563,7 @@ class FreeSpaceApp:
                 if not os.path.exists(dest_dir):
                     all_verified = False
                     self.log_message(f"✗ FAILED: {os.path.basename(src_dir)} (destination not found)")
+                    self.page.update()
                     verify_log["verifications"].append({
                         "source": src_dir,
                         "destination": dest_dir,
@@ -578,12 +579,15 @@ class FreeSpaceApp:
                 if verification_result["status"] != "verified":
                     all_verified = False
                     self.log_message(f"✗ FAILED: {os.path.basename(src_dir)} ({len(verification_result.get('mismatches', []))} mismatches)")
+                    self.page.update()
                 else:
                     skipped_count = len(verification_result.get('skipped', []))
                     if skipped_count > 0:
                         self.log_message(f"✓ Verified {os.path.basename(src_dir)} ({skipped_count} files skipped)")
+                        self.page.update()
                     else:
                         self.log_message(f"✓ Verified {os.path.basename(src_dir)}")
+                        self.page.update()
             
             # Save log locally
             with open(log_file, 'w') as f:
@@ -597,17 +601,22 @@ class FreeSpaceApp:
             
             if all_verified:
                 self.log_message("Verification completed successfully!")
+                self.page.update()
                 self.update_status(f"Verification successful! Log saved to: {log_file} and {dest_log_file}", show_progress=False)
                 self.finalize_button.disabled = False
+                self.page.update()
                 
                 # If auto-complete is enabled, continue with finalize
                 if hasattr(self, '_auto_complete_mode') and self._auto_complete_mode:
                     self.log_message("Auto-complete: Starting finalization...")
+                    self.page.update()
                     self._perform_finalize()
             else:
                 self.log_message("Verification completed with errors")
+                self.page.update()
                 self.update_status(f"Verification failed! Check log: {log_file} and {dest_log_file}", show_progress=False)
                 self.verify_button.disabled = False
+                self.page.update()
             
             self.page.update()
             
@@ -725,6 +734,7 @@ class FreeSpaceApp:
     def _perform_finalize_directory_level(self):
         """Perform the finalization: replace entire directories with symlinks to destination."""
         self.update_status("Finalizing move: replacing directories with links...", show_progress=True)
+        self.log_message("Starting finalization (directory-level mode)...")
         self.finalize_button.disabled = True
         self.page.update()  # Force UI update before starting long operation
         
@@ -742,9 +752,10 @@ class FreeSpaceApp:
                 # Use full path structure like in copy
                 src_path = Path(src_dir).resolve()
                 rel_structure = str(src_path).lstrip('/')
-                dest_dir = os.path.join(self.destination_directory, rel_structure)
+                dest_dir = os.path.join(self.actual_destination_directory, rel_structure)
                 
                 self.update_status(f"Finalizing: {src_dir}...", show_progress=True)
+                self.log_message(f"Finalizing {os.path.basename(src_dir)}...")
                 
                 if not os.path.exists(dest_dir):
                     finalize_log["operations"].append({
@@ -789,6 +800,8 @@ class FreeSpaceApp:
                         
                         # Delete backup after successful symlink creation
                         shutil.rmtree(backup_dir)
+                        
+                        self.log_message(f"✓ Finalized {os.path.basename(src_dir)}")
                         
                         finalize_log["operations"].append({
                             "source": src_dir,
@@ -1106,21 +1119,24 @@ class FreeSpaceApp:
     
     def copy_status_to_clipboard(self, e):
         """Copy the current status text to clipboard."""
-        self.page.clipboard.set(self.status_text.value)
-        # Show a brief confirmation
-        original_value = self.status_text.value
-        self.status_text.value = "✓ Status copied to clipboard!"
-        self.page.update()
-        
-        # Reset after a brief delay
-        import time
-        def reset_status():
-            time.sleep(1)
-            self.status_text.value = original_value
+        try:
+            self.page.set_clipboard(self.status_text.value)
+            # Show a brief confirmation
+            original_value = self.status_text.value
+            self.status_text.value = "✓ Status copied to clipboard!"
             self.page.update()
-        
-        thread = threading.Thread(target=reset_status, daemon=True)
-        thread.start()
+            
+            # Reset after a brief delay
+            import time
+            def reset_status():
+                time.sleep(1)
+                self.status_text.value = original_value
+                self.page.update()
+            
+            thread = threading.Thread(target=reset_status, daemon=True)
+            thread.start()
+        except Exception as ex:
+            print(f"Clipboard error: {ex}")
 
 
 def main(page: ft.Page):
