@@ -97,7 +97,7 @@ class FreeSpaceApp:
                     border_radius=5,
                     padding=10
                 ),
-            ]),
+            ], spacing=6),
             padding=10,
             border=ft.Border.all(1, ft.Colors.BLUE_200),
             border_radius=10,
@@ -121,7 +121,7 @@ class FreeSpaceApp:
                     border=ft.Border.all(1, ft.Colors.GREY_400),
                     border_radius=5,
                 ),
-            ]),
+            ], spacing=6),
             padding=10,
             border=ft.Border.all(1, ft.Colors.GREEN_200),
             border_radius=10,
@@ -162,6 +162,17 @@ class FreeSpaceApp:
             )
         )
         
+        self.restore_button = ft.Button(
+            "4. Restore",
+            icon=ft.Icons.RESTORE,
+            on_click=self.restore_files,
+            disabled=True,
+            style=ft.ButtonStyle(
+                color=ft.Colors.WHITE,
+                bgcolor=ft.Colors.RED_700
+            )
+        )
+        
         # Workflow options
         self.auto_complete_checkbox = ft.Checkbox(
             label="Auto-complete workflow (automatically verify and finalize after copy)",
@@ -181,8 +192,8 @@ class FreeSpaceApp:
                     self.copy_button,
                     self.verify_button,
                     self.finalize_button,
+                    self.restore_button,
                 ], alignment=ft.MainAxisAlignment.SPACE_EVENLY),
-                ft.Divider(height=5, color=ft.Colors.TRANSPARENT),
                 self.auto_complete_checkbox,
                 self.file_level_symlinks_checkbox,
             ], spacing=5),
@@ -228,12 +239,12 @@ class FreeSpaceApp:
                         icon_size=20,
                         on_click=self.copy_status_to_clipboard
                     ),
-                ]),
+                ], spacing=0),
                 self.progress_bar,
                 self.status_text,
                 ft.Text("Recent Log:", size=14, weight=ft.FontWeight.BOLD),
                 self.log_text_area,
-            ]),
+            ], spacing=4),
             padding=10,
             border=ft.Border.all(1, ft.Colors.GREY_300),
             border_radius=10,
@@ -244,12 +255,11 @@ class FreeSpaceApp:
             ft.Container(
                 content=ft.Column([
                     title,
-                    ft.Divider(height=1),
                     source_section,
                     destination_section,
                     action_section,
                     status_section,
-                ], scroll=ft.ScrollMode.AUTO, spacing=10),
+                ], scroll=ft.ScrollMode.AUTO, spacing=8),
                 padding=15,
             )
         )
@@ -355,6 +365,8 @@ class FreeSpaceApp:
         has_destination = bool(self.destination_directory)
         
         self.copy_button.disabled = not (has_sources and has_destination)
+        # Restore button only needs source directories (will find symlinks there)
+        self.restore_button.disabled = not has_sources
         self.page.update()
     
     def update_status(self, message: str, show_progress: bool = False):
@@ -469,6 +481,7 @@ class FreeSpaceApp:
                 
                 # Copy with error handling for individual files
                 errors = []
+                skipped_trashes = []
                 def copy_with_errors(src, dst, *, follow_symlinks=True):
                     try:
                         return shutil.copy2(src, dst, follow_symlinks=follow_symlinks)
@@ -476,8 +489,22 @@ class FreeSpaceApp:
                         errors.append((src, str(e)))
                         return None
                 
+                def ignore_items(dir, files):
+                    ignored = []
+                    for f in files:
+                        full_path = os.path.join(dir, f)
+                        # Skip symbolic links
+                        if os.path.islink(full_path):
+                            ignored.append(f)
+                        # Skip .Trashes directories and files
+                        elif f == '.Trashes' or f.startswith('.Trashes'):
+                            ignored.append(f)
+                            skipped_trashes.append(full_path)
+                            self.log_message(f"Deleted (not copied): {os.path.relpath(full_path, src_dir)}")
+                    return ignored
+                
                 shutil.copytree(src_dir, dest_dir, copy_function=copy_with_errors, 
-                               ignore=lambda dir, files: [f for f in files if os.path.islink(os.path.join(dir, f))])
+                               ignore=ignore_items)
                 
                 self.log_message(f"✓ Copied {os.path.basename(src_dir)}")
                 
@@ -486,7 +513,9 @@ class FreeSpaceApp:
                     "destination": dest_dir,
                     "status": "copied" if not errors else "partial",
                     "files_failed": len(errors),
-                    "failed_files": errors[:10] if errors else None  # Log first 10 failures
+                    "failed_files": errors[:10] if errors else None,  # Log first 10 failures
+                    "trashes_skipped": len(skipped_trashes),
+                    "trashes_items": skipped_trashes if skipped_trashes else None
                 })
             
             # Save log locally
@@ -1050,6 +1079,247 @@ class FreeSpaceApp:
         except Exception as ex:
             self.show_error(f"Error during finalization: {str(ex)}")
             self.finalize_button.disabled = False
+    async def restore_files(self, e):
+        """Restore original files from symlinks by copying from destination."""
+        # Confirmation
+        confirmed = await self.ask_yes_no(
+            "⚠️ Restore Confirmation",
+            f"This will find all symbolic links in the selected {len(self.source_directories)} "
+            f"director{'y' if len(self.source_directories) == 1 else 'ies'} "
+            f"and restore the original files from their destinations.\n\n"
+            "The symlinks will be replaced with actual file copies.\n\n"
+            "Are you sure?"
+        )
+        
+        if confirmed:
+            # Run the restore operation in a background thread to avoid blocking UI
+            def run_restore():
+                try:
+                    self._perform_restore()
+                except Exception as ex:
+                    print(f"Exception during restore: {ex}")
+                    import traceback
+                    traceback.print_exc()
+            
+            thread = threading.Thread(target=run_restore, daemon=True)
+            thread.start()
+    
+    def _perform_restore(self):
+        """Perform the restoration: find symlinks and restore original files."""
+        self.update_status("Restoring: scanning for symbolic links...", show_progress=True)
+        self.restore_button.disabled = True
+        self.page.update()
+        
+        timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+        log_file = self.log_directory / f"restore_log_{timestamp}.json"
+        
+        restore_log = {
+            "timestamp": timestamp,
+            "operations": []
+        }
+        
+        total_restored = 0
+        total_failed = 0
+        total_skipped = 0
+        total_bytes_restored = 0
+        
+        try:
+            for src_dir in self.source_directories:
+                self.update_status(f"Restoring: scanning {src_dir}...", show_progress=True)
+                self.log_message(f"Scanning {os.path.basename(src_dir)}...")
+                
+                dir_log = {
+                    "source": src_dir,
+                    "symlinks_found": 0,
+                    "files": []
+                }
+                
+                # Check if the entire directory is a symlink
+                if os.path.islink(src_dir):
+                    try:
+                        link_target = os.readlink(src_dir)
+                        self.log_message(f"Directory {os.path.basename(src_dir)} is a symlink to {link_target}")
+                        
+                        if not os.path.exists(link_target):
+                            dir_log["files"].append({
+                                "path": src_dir,
+                                "status": "failed",
+                                "reason": "symlink target does not exist"
+                            })
+                            total_failed += 1
+                        else:
+                            # Remove symlink and copy entire directory back
+                            backup_link = src_dir + ".link_backup_" + timestamp
+                            os.rename(src_dir, backup_link)
+                            
+                            try:
+                                # Copy directory from destination back to source
+                                shutil.copytree(link_target, src_dir)
+                                
+                                # Calculate bytes restored
+                                bytes_restored = 0
+                                for root, dirs, files in os.walk(src_dir):
+                                    for file in files:
+                                        try:
+                                            bytes_restored += os.path.getsize(os.path.join(root, file))
+                                        except (OSError, PermissionError):
+                                            pass
+                                
+                                # Remove backup symlink after successful restore
+                                os.remove(backup_link)
+                                
+                                total_restored += 1
+                                total_bytes_restored += bytes_restored
+                                dir_log["symlinks_found"] = 1
+                                dir_log["files"].append({
+                                    "path": src_dir,
+                                    "status": "restored",
+                                    "type": "directory",
+                                    "bytes_restored": bytes_restored
+                                })
+                                self.log_message(f"✓ Restored directory {os.path.basename(src_dir)}")
+                                
+                            except Exception as restore_ex:
+                                # Rollback on error: restore symlink
+                                if os.path.exists(src_dir):
+                                    shutil.rmtree(src_dir)
+                                os.rename(backup_link, src_dir)
+                                dir_log["files"].append({
+                                    "path": src_dir,
+                                    "status": "failed",
+                                    "reason": str(restore_ex)
+                                })
+                                total_failed += 1
+                                self.log_message(f"✗ Failed to restore {os.path.basename(src_dir)}: {restore_ex}")
+                        
+                    except Exception as ex:
+                        dir_log["files"].append({
+                            "path": src_dir,
+                            "status": "failed",
+                            "reason": str(ex)
+                        })
+                        total_failed += 1
+                        self.log_message(f"✗ Error processing {os.path.basename(src_dir)}: {ex}")
+                
+                else:
+                    # Walk through directory and find file-level symlinks
+                    symlinks_found = []
+                    for root, dirs, files in os.walk(src_dir):
+                        for file in files:
+                            file_path = os.path.join(root, file)
+                            if os.path.islink(file_path):
+                                symlinks_found.append(file_path)
+                    
+                    dir_log["symlinks_found"] = len(symlinks_found)
+                    
+                    if len(symlinks_found) == 0:
+                        self.log_message(f"No symlinks found in {os.path.basename(src_dir)}")
+                        total_skipped += 1
+                    else:
+                        self.log_message(f"Found {len(symlinks_found)} symlink(s) in {os.path.basename(src_dir)}")
+                        
+                        # Restore each symlink
+                        for symlink_path in symlinks_found:
+                            try:
+                                link_target = os.readlink(symlink_path)
+                                rel_path = os.path.relpath(symlink_path, src_dir)
+                                
+                                if not os.path.exists(link_target):
+                                    dir_log["files"].append({
+                                        "path": rel_path,
+                                        "status": "failed",
+                                        "reason": "symlink target does not exist"
+                                    })
+                                    total_failed += 1
+                                    continue
+                                
+                                # Get file size
+                                file_size = os.path.getsize(link_target)
+                                
+                                # Backup symlink
+                                backup_link = symlink_path + ".link_backup_" + timestamp
+                                os.rename(symlink_path, backup_link)
+                                
+                                try:
+                                    # Copy file from destination to replace symlink
+                                    shutil.copy2(link_target, symlink_path)
+                                    
+                                    # Remove backup after successful restore
+                                    os.remove(backup_link)
+                                    
+                                    total_restored += 1
+                                    total_bytes_restored += file_size
+                                    dir_log["files"].append({
+                                        "path": rel_path,
+                                        "status": "restored",
+                                        "type": "file",
+                                        "bytes_restored": file_size
+                                    })
+                                    
+                                except Exception as restore_ex:
+                                    # Rollback on error: restore symlink
+                                    if os.path.exists(symlink_path):
+                                        os.remove(symlink_path)
+                                    os.rename(backup_link, symlink_path)
+                                    dir_log["files"].append({
+                                        "path": rel_path,
+                                        "status": "failed",
+                                        "reason": str(restore_ex)
+                                    })
+                                    total_failed += 1
+                                
+                            except Exception as ex:
+                                dir_log["files"].append({
+                                    "path": os.path.relpath(symlink_path, src_dir) if src_dir in symlink_path else symlink_path,
+                                    "status": "failed",
+                                    "reason": str(ex)
+                                })
+                                total_failed += 1
+                        
+                        if dir_log["symlinks_found"] > 0:
+                            restored_count = sum(1 for f in dir_log["files"] if f.get("status") == "restored")
+                            self.log_message(f"✓ Restored {restored_count}/{dir_log['symlinks_found']} file(s) in {os.path.basename(src_dir)}")
+                
+                restore_log["operations"].append(dir_log)
+            
+            # Save log
+            restore_log["summary"] = {
+                "total_restored": total_restored,
+                "total_failed": total_failed,
+                "total_skipped": total_skipped,
+                "total_bytes_restored": total_bytes_restored
+            }
+            
+            with open(log_file, 'w') as f:
+                json.dump(restore_log, f, indent=2)
+            
+            # Format bytes restored
+            if total_bytes_restored >= 1024**3:  # GB
+                space_restored = f"{total_bytes_restored / (1024**3):.2f} GB"
+            elif total_bytes_restored >= 1024**2:  # MB
+                space_restored = f"{total_bytes_restored / (1024**2):.2f} MB"
+            elif total_bytes_restored >= 1024:  # KB
+                space_restored = f"{total_bytes_restored / 1024:.2f} KB"
+            else:
+                space_restored = f"{total_bytes_restored} bytes"
+            
+            status_msg = f"Restore complete! {total_restored} item(s) restored. Space used: {space_restored}."
+            if total_skipped > 0:
+                status_msg += f" ({total_skipped} director{'y' if total_skipped == 1 else 'ies'} had no symlinks)"
+            if total_failed > 0:
+                status_msg += f" ({total_failed} failed - check log)"
+            status_msg += f" Log saved to: {log_file}"
+            
+            self.update_status(status_msg, show_progress=False)
+            self.log_message("Restore operation completed.")
+            
+        except Exception as ex:
+            self.show_error(f"Error during restore: {str(ex)}")
+            self.update_status("Restore failed.", show_progress=False)
+        finally:
+            self.restore_button.disabled = False
+            self.page.update()
+    
             self.update_status("Finalization failed.", show_progress=False)
     
     def show_error(self, message: str):

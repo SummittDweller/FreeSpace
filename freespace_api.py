@@ -42,8 +42,9 @@ class FreeSpaceAPI:
         if os.path.exists(dest_path):
             raise FileExistsError(f"Destination already exists: {dest_path}")
         
-        # Copy directory but skip symbolic links and handle errors
+        # Copy directory but skip symbolic links and .Trashes, handle errors
         errors = []
+        skipped_trashes = []
         def copy_with_errors(src, dst, *, follow_symlinks=True):
             try:
                 return shutil.copy2(src, dst, follow_symlinks=follow_symlinks)
@@ -51,8 +52,21 @@ class FreeSpaceAPI:
                 errors.append((src, str(e)))
                 return None
         
+        def ignore_items(dir, files):
+            ignored = []
+            for f in files:
+                full_path = os.path.join(dir, f)
+                # Skip symbolic links
+                if os.path.islink(full_path):
+                    ignored.append(f)
+                # Skip .Trashes directories and files
+                elif f == '.Trashes' or f.startswith('.Trashes'):
+                    ignored.append(f)
+                    skipped_trashes.append(full_path)
+            return ignored
+        
         shutil.copytree(source, dest_path, copy_function=copy_with_errors,
-                       ignore=lambda dir, files: [f for f in files if os.path.islink(os.path.join(dir, f))])
+                       ignore=ignore_items)
         
         log_data = {
             "timestamp": timestamp,
@@ -61,7 +75,9 @@ class FreeSpaceAPI:
             "destination": dest_path,
             "status": "completed" if not errors else "partial",
             "files_failed": len(errors),
-            "failed_files": errors[:10] if errors else None  # Log first 10 failures
+            "failed_files": errors[:10] if errors else None,  # Log first 10 failures
+            "trashes_skipped": len(skipped_trashes),
+            "trashes_items": skipped_trashes if skipped_trashes else None
         }
         
         with open(log_file, 'w') as f:
