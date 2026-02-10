@@ -1,6 +1,15 @@
 # FreeSpace
 
-A Python/Flet GUI application to support a hard disk "move with verification to external storage" workflow to free up hard drive space.
+A Python/Flet GUI application to support hard disk space management workflows including "move with verification to external storage" and "direct directory relocation with symlink replacement" to free up hard drive space.
+
+## Recent Changes (v1.2 - February 2026)
+
+- **New Move Directory Workflow**: Direct move any directory to a new location with automatic symlink replacement
+- **Restore Moved Directory**: Undo a move operation and restore a directory to its original location (safeguard feature)
+- **Move Metadata Tracking**: Automatically saves metadata in moved directories to enable restoration
+- **Instant Space Reclamation**: Move directories between drives or to new locations instantly
+- **Atomic Operations**: Safe move operations with automatic rollback on failure
+- **Comprehensive Logging**: All move operations logged with timestamps and details
 
 ## Recent Changes (v1.1 - January 2026)
 
@@ -16,6 +25,7 @@ A Python/Flet GUI application to support a hard disk "move with verification to 
 
 ## Features
 
+### Copy & Verify Workflow
 - **Directory Selection**: Easy selection of one or more source directories from your hard drive
 - **External Storage Destination**: Select any external storage (USB, network drive, external HDD/SSD) as the destination
 - **Organized Destination Structure**: Automatically creates `from-FreeSpace/<hostname>-<timestamp>/` subdirectories for each session
@@ -25,9 +35,22 @@ A Python/Flet GUI application to support a hard disk "move with verification to 
 - **Flexible Symbolic Links**: 
   - **Default Mode**: Replace entire directory with a single symlink (recommended)
   - **File-Level Mode**: Replace each file individually with symlinks while preserving directory structure
+
+### Move Directory Workflow (NEW)
+- **Direct Move**: Move entire directories to any location with a single operation
+- **Automatic Symlink Replacement**: Original directory automatically replaced with symlink to new location
+- **No Verification Needed**: Move operation is atomic - contents are moved and symlink is created in one step
+- **Works Across Filesystems**: Move directories between different drives or partitions
+- **Safe Rollback**: Automatic rollback to original state if move fails at any point
+- **Restore Capability**: Undo a move operation with a single click to restore the directory to its original location
+- **Move Metadata**: Automatically saves metadata in moved directories to track original location and enable restoration
+
+### General Features
 - **Real-Time Monitoring**: Live log display shows current operations and completion status
-- **Detailed Logging**: Timestamped JSON logs for all operations (copy, verify, finalize)
+- **Detailed Logging**: Timestamped JSON logs for all operations (copy, verify, finalize, move, restore)
 - **User Confirmations**: Multiple confirmation dialogs to prevent accidental data loss
+- **Restoration**: Ability to restore original files from symlinks when needed
+- **Move Undo**: Restore moved directories to original locations as needed
 
 ## Requirements
 
@@ -66,7 +89,7 @@ from freespace_api import FreeSpaceAPI
 # Initialize API
 api = FreeSpaceAPI()
 
-# Copy directory
+# Copy directory to external storage
 result = api.copy_directory(
     source="/path/to/source/directory",
     destination="/path/to/external/storage"
@@ -84,24 +107,63 @@ if verify_result['status'] == 'verified':
         source="/path/to/source/directory",
         destination=result['destination']
     )
+
+# OR use the new move_directory method for direct relocation
+move_result = api.move_directory(
+    source="/path/to/source/directory",
+    destination="/path/to/new/location"
+)
+
+# Restore a previously moved directory to original location
+restore_result = api.restore_moved_directory(
+    moved_location="/path/to/new/location/directory"
+)
 ```
 
 See `freespace_api.py` for more details.
 
-### Workflow
+### Workflows
 
-#### Quick Start (Auto-Complete Mode)
+#### Workflow 1: Move Directory (NEW - Simple & Fast)
+
+Use this for direct relocation of directories to new locations without copying verification overhead.
+
+1. **Add Source Directories**: Click "Add Directory/Directories" to select the directory you want to move
+2. **Click Move Directory Button**: Select the destination location in the file picker
+3. **Confirm the Move**: Review the move plan and confirm
+4. **Done!**: The directory is moved and replaced with a symlink automatically
+
+**Need to undo?** Click "Restore Moved Directory" and select the moved directory to restore it to its original location.
+
+**When to use:**
+- Moving directories between different drives/filesystems
+- Relocating directories to free up primary drive space for applications/swap
+- When you want the fastest possible operation without verification
+
+**Example:**
+- Move `~/Library/Application Support/LargeApp` to `/Volumes/ExternalDrive/AppSupport`
+- Move `/var/cache` to `/mnt/slowstorage/cache`
+
+#### Workflow 2: Copy, Verify, Then Finalize (Conservative - Safe)
+
+Use this for copying to external storage with built-in verification.
 
 1. **Add Source Directories**: Select directories you want to move
-2. **Select Destination**: Choose the base destination folder
-3. **Enable Auto-Complete**: Check "Auto-complete workflow" checkbox
-4. **One-Click Process**: Click "1. Copy to Destination" - the app will automatically:
-   - Copy all directories to the destination
-   - Verify all copied files
-   - Delete originals and create symbolic links
-   - Show progress for each step in the real-time log
+2. **Select Destination**: Choose the base destination folder (USB drive, external SSD, network drive, etc.)
+3. **Enable Auto-Complete (Optional)**: Check "Auto-complete workflow" for one-click processing
+4. **One-Click or Manual Process**:
+   - **Auto-Complete**: Click "1. Copy to Destination" - automatically runs all steps
+   - **Manual**: 
+     - Click "1. Copy to Destination" to copy all directories
+     - Click "2. Verify Copy" to verify all files were copied correctly
+     - Click "3. Delete & Create Links" to replace originals with symlinks
 
-#### Manual Step-by-Step Mode
+**When to use:**
+- Backing up to external storage
+- When you want verification before deletion
+- Creating reliable backups with symlink forwarding
+
+#### Step-by-Step Details (Copy/Verify/Finalize Workflow)
 
 1. **Add Source Directories**: Click "Add Directory/Directories" to select directories from your hard drive that you want to move to external storage. The file picker will keep opening after each selection, allowing you to select multiple directories in succession. The picker stays focused on the parent directory of your last selection for convenience. Click Cancel in the file picker when you're finished selecting directories.
 
@@ -120,32 +182,18 @@ See `freespace_api.py` for more details.
    - Already-existing symbolic links are skipped
    - The log reports how many items were processed, skipped, or failed
 
-### Workflow Options
-
-- **Auto-complete workflow**: Automatically runs verify and finalize after copy completes. Perfect for routine operations when you're confident about the source and destination.
-- **Replace each file with individual symlinks**: Uses file-level symlinks instead of directory-level. Useful when you need to preserve the original directory structure with individual file links.
-
-### Safety Features
-
-- **Multiple Confirmations**: The application asks for confirmation before copying and before deleting originals
-- **Step-by-step Process**: Operations are done in stages (copy → verify → finalize) to ensure safety
-- **Verification**: Files are verified before deletion is allowed
-- **Detailed Logging**: All operations are logged with timestamps in JSON format
-
-### Logs
-
-Logs are stored in two locations:
-1. **Local**: `~/freespace_logs/` on your computer
-2. **Destination**: `<destination>/from-FreeSpace/<hostname>-<timestamp>/freespace_logs/` on your external storage
-
-The real-time log display in the app shows the most recent 15 operations with timestamps for easy monitoring.
-
-Log files include:
-- `copy_log_<timestamp>.json` - Details of copy operations
-- `verify_log_<timestamp>.json` - Verification results including any mismatches or skipped files
-- `finalize_log_<timestamp>.json` - Finalization details including space freed and any errors
-
 ## Troubleshooting
+
+### Permission Denied Errors During Move/Restore
+
+If you encounter "Permission denied" errors when moving or restoring directories:
+
+**Cause**: The application doesn't have sufficient permissions to move directories that are owned by other users or have restricted permissions (like system directories or directories owned by root).
+
+**Solution**: 
+1. **For non-system directories**: Ensure you own the directory you're trying to move (check with `ls -ld /path/to/directory`)
+2. **For system/protected directories**: You may need to run the application with elevated privileges or move them to a location you own first
+3. **Check permissions**: Use `ls -la /path/to/directory` to see who owns the directory and what permissions are set
 
 ### Verification Fails
 - Check the log files for specific files that failed verification
@@ -156,12 +204,26 @@ Log files include:
 - If you re-run a copy, already-existing destinations are skipped and logged
 - Each session creates a new timestamped folder to avoid conflicts
 
-### Permission Denied Errors
-- Some system files may have restricted permissions
-- These are automatically skipped and logged
-- Review the log's "skipped" section to see which files were affected
+### Restoring a Moved Directory
+- Click "Restore Moved Directory" button
+- Select the directory in its current (moved) location
+- The app will automatically find the original location using the metadata file
+- Confirm the restoration
+- The directory is restored and the symlink is removed
+
+**Note**: The metadata file (`.freespace_move_metadata.json`) is automatically created in the moved directory and must remain there for restoration to work.
+
+## Logs
+
+Logs are stored in two locations:
+1. **Local**: `~/freespace_logs/` on your computer
+2. **Destination**: `<destination>/from-FreeSpace/<hostname>-<timestamp>/freespace_logs/` on your external storage (for copy/verify/finalize workflows)
+
+The real-time log display in the app shows the most recent 15 operations with timestamps for easy monitoring.
 
 Log files include:
+- `move_log_YYYYMMDD_HHMMSS.json` - Move operation details (new!)
+- `restore_move_log_YYYYMMDD_HHMMSS.json` - Restore move operation details (new!)
 - `copy_log_YYYYMMDD_HHMMSS.json` - Copy operation details
 - `verify_log_YYYYMMDD_HHMMSS.json` - Verification results
 - `finalize_log_YYYYMMDD_HHMMSS.json` - Finalization details including:
@@ -173,26 +235,53 @@ Log files include:
 
 Having logs in both locations ensures you have a complete record of all operations both locally and with your backed-up data.
 
-## Example Use Case
+## Example Use Cases
 
-You have large media directories on your hard drive that you want to move to external storage:
+### Use Case 1: Free Up Primary Drive Space
+
+Move large directories to a secondary drive to make room for applications, swap space, and system operations:
 
 1. Launch FreeSpace
-2. Add `/home/user/Videos/Projects` and `/home/user/Photos/2024`
-3. Select destination `/media/external/backup/` (could be USB drive, network drive, external SSD, etc.)
-4. Copy → Verify → Finalize
-5. Original directories become symbolic links:
-   - `/home/user/Videos/Projects` → `/media/external/backup/home/user/Videos/Projects`
-   - `/home/user/Photos/2024` → `/media/external/backup/home/user/Photos/2024`
+2. Add `/Users/mark/Library/Application Support/LargeApp` (5GB) and `/Users/mark/Library/Caches` (10GB)
+3. Click **"Move Directory"** button
+4. Select `/Volumes/ExternalSSD/` as the destination
+5. Confirm the move
+6. The directories are instantly moved and replaced with symlinks
+7. Primary drive now has 15GB of free space!
+8. `LargeApp` continues working transparently through the symlink
 
-The full directory structure is preserved at the destination, making it easy to restore or relocate files later.
+### Use Case 2: Archive to External Storage with Verification
+
+Back up large media collections to external storage before archiving:
+
+1. Launch FreeSpace
+2. Add `/home/user/Videos/Projects` and `/home/user/Photos/Archive`
+3. Select destination `/media/external/backup/`
+4. Check "Auto-complete workflow"
+5. Copy → Verify → Finalize (automatic)
+6. Original directories become symbolic links pointing to the backup
+7. Logs saved in both locations for verification
+
+### Use Case 3: Consolidate Storage
+
+Move directories from multiple primary drives to a large storage array:
+
+1. Add multiple directories to move
+2. Click "Move Directory"
+3. Select `/mnt/storage-array/archive/` as destination
+4. Complete move with automatic rollback if anything goes wrong
+5. All directories are relocated and replaced with symlinks
 
 ## Important Notes
 
-- **Backup First**: Always have backups before using this tool
+- **Backup First**: Always have backups before using this tool, especially for critical data
 - **Symbolic Links**: The tool creates symbolic links that work on Linux/Mac. On Windows, you may need administrator privileges
 - **External Storage**: Make sure your destination storage has enough space and remains accessible throughout the process (keep USB drives connected, network drives mounted, etc.)
 - **Log Files**: Keep log files for reference in case you need to verify or troubleshoot operations
+- **Moved vs Copied**: 
+  - **Move Directory**: Relocates content instantly (no copy overhead), perfect for internal storage reorganization
+  - **Copy/Verify/Finalize**: Creates a backup copy, perfect for external storage and archival
+
 - **Immutable Files**: Files protected with the immutable flag (common in macOS apps like Receipts, Mail, etc.) are automatically skipped and remain as original files. The application reports how many files were skipped in the status message and logs detailed information.
 - **Directory Structure**: The finalization process preserves directory structure. Only individual files are replaced with symbolic links, not entire directories.
 

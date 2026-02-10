@@ -28,4 +28,4 @@ pip install -r requirements.txt
 
 # Launch the app
 echo -e "${GREEN}Launching FreeSpace app...${NC}"
-python main.py
+python -u main.py

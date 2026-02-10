@@ -19,6 +19,7 @@ import errno
 import asyncio
 import threading
 import socket
+import sys
 from pathlib import Path
 from typing import List, Dict
 
@@ -28,30 +29,35 @@ class FreeSpaceApp:
     
     def __init__(self, page: ft.Page):
         self.page = page
-        self.page.title = "FreeSpace - Hard Disk Move Workflow"
+        self.page.title = "FreeSpace - Move Directory Workflow"
         self.page.window.width = 900
-        self.page.window.height = 1000
+        self.page.window.height = 800
         self.page.window.min_width = 900
-        self.page.window.min_height = 900
+        self.page.window.min_height = 800
         self.page.window.resizable = True
         self.page.scroll = ft.ScrollMode.AUTO
         
-        # State variables
-        self.source_directories: List[str] = []
-        self.destination_directory: str = ""
-        self.actual_destination_directory: str = ""  # Will be destination + from-FreeSpace/hostname-timestamp
+        # State variables - simplified for single directory move
+        self.source_directory: str = ""  # Single directory only
+        self.destination_directory: str = ""  # Direct destination, no session subdirs
         self.log_directory = Path.home() / "freespace_logs"
         self.log_directory.mkdir(exist_ok=True)
         
+        # Operation control - for kill switch functionality
+        self.operation_in_progress = False
+        self.stop_operation = threading.Event()  # Signal to stop current operation
+        
         # UI Components
-        self.source_list = None
+        self.source_text = None
         self.destination_text = None
         self.status_text = None
         self.log_text_area = None
+        self.kill_button = None  # Kill switch button
         self.progress_bar = None
         self.copy_button = None
         self.verify_button = None
         self.finalize_button = None
+        self.sudo_password_field = None  # Sudo password input
         
         # FilePicker services
         self.source_picker = ft.FilePicker()
@@ -70,53 +76,53 @@ class FreeSpaceApp:
             color=ft.Colors.BLUE_700
         )
         
-        # Source directory section
+        # Source directory section - now for single selection only
         source_section = ft.Container(
             content=ft.Column([
-                ft.Text("Source Directories (Hard Drive)", size=16, weight=ft.FontWeight.BOLD),
+                ft.Text("Source Directory (to move)", size=16, weight=ft.FontWeight.BOLD),
                 ft.Row([
                     ft.Button(
-                        "Add Directory/Directories",
+                        "Select Directory",
                         icon=ft.Icons.FOLDER_OPEN,
                         on_click=self.pick_source_directory
                     ),
                     ft.Button(
-                        "Clear All",
-                        icon=ft.Icons.CLEAR_ALL,
-                        on_click=self.clear_source_directories
+                        "Clear",
+                        icon=ft.Icons.CLEAR,
+                        on_click=self.clear_source_directory
                     ),
                 ]),
                 ft.Container(
-                    content=ft.Column(
-                        [],
-                        scroll=ft.ScrollMode.AUTO,
-                        spacing=5
-                    ),
-                    height=150,
+                    content=ft.Text("No directory selected", italic=True, color=ft.Colors.GREY_700),
+                    padding=10,
                     border=ft.Border.all(1, ft.Colors.GREY_400),
                     border_radius=5,
-                    padding=10
                 ),
             ], spacing=6),
             padding=10,
             border=ft.Border.all(1, ft.Colors.BLUE_200),
             border_radius=10,
         )
-        self.source_list = source_section.content.controls[2].content
+        self.source_text = source_section.content.controls[2].content
         
-        # Destination directory section
+        # Destination directory section - simplified, no session subdirectories
         destination_section = ft.Container(
             content=ft.Column([
-                ft.Text("Destination Directory (External Storage)", size=16, weight=ft.FontWeight.BOLD),
+                ft.Text("Destination Device/Location", size=16, weight=ft.FontWeight.BOLD),
                 ft.Row([
                     ft.Button(
-                        "Select Destination Directory",
+                        "Select Location",
                         icon=ft.Icons.STORAGE,
                         on_click=self.pick_destination_directory
                     ),
+                    ft.Button(
+                        "Clear",
+                        icon=ft.Icons.CLEAR,
+                        on_click=self.clear_destination_directory
+                    ),
                 ]),
                 ft.Container(
-                    content=ft.Text("No destination selected", italic=True, color=ft.Colors.GREY_700),
+                    content=ft.Text("No location selected", italic=True, color=ft.Colors.GREY_700),
                     padding=10,
                     border=ft.Border.all(1, ft.Colors.GREY_400),
                     border_radius=5,
@@ -128,12 +134,13 @@ class FreeSpaceApp:
         )
         self.destination_text = destination_section.content.controls[2].content
         
-        # Action buttons
+        # Action buttons - old copy/verify/finalize workflow disabled
         self.copy_button = ft.Button(
             "1. Copy to Destination",
             icon=ft.Icons.COPY_ALL,
             on_click=self.copy_directories,
             disabled=True,
+            visible=False,  # Hidden - not used in simplified move-only interface
             style=ft.ButtonStyle(
                 color=ft.Colors.WHITE,
                 bgcolor=ft.Colors.BLUE_500
@@ -145,6 +152,7 @@ class FreeSpaceApp:
             icon=ft.Icons.VERIFIED,
             on_click=self.verify_copy,
             disabled=True,
+            visible=False,  # Hidden - not used in simplified move-only interface
             style=ft.ButtonStyle(
                 color=ft.Colors.WHITE,
                 bgcolor=ft.Colors.GREEN_500
@@ -156,6 +164,7 @@ class FreeSpaceApp:
             icon=ft.Icons.LINK,
             on_click=self.finalize_move,
             disabled=True,
+            visible=False,  # Hidden - not used in simplified move-only interface
             style=ft.ButtonStyle(
                 color=ft.Colors.WHITE,
                 bgcolor=ft.Colors.ORANGE_700
@@ -167,23 +176,58 @@ class FreeSpaceApp:
             icon=ft.Icons.RESTORE,
             on_click=self.restore_files,
             disabled=True,
+            visible=False,  # Hidden - not used in simplified move-only interface
             style=ft.ButtonStyle(
                 color=ft.Colors.WHITE,
                 bgcolor=ft.Colors.RED_700
             )
         )
         
-        # Workflow options
+        self.move_button = ft.Button(
+            "Move Directory",
+            icon=ft.Icons.DRIVE_FILE_MOVE,
+            on_click=self.move_directory,
+            disabled=True,
+            style=ft.ButtonStyle(
+                color=ft.Colors.WHITE,
+                bgcolor=ft.Colors.PURPLE_700
+            ),
+            tooltip="Move entire directory to new location and replace with symlink"
+        )
+        
+        self.restore_move_button = ft.Button(
+            "Restore Moved Directory",
+            icon=ft.Icons.RESTORE_FROM_TRASH,
+            on_click=self.restore_moved_directory,
+            style=ft.ButtonStyle(
+                color=ft.Colors.WHITE,
+                bgcolor=ft.Colors.DEEP_ORANGE_700
+            ),
+            tooltip="Restore a previously moved directory to its original location"
+        )
+        
+        # Workflow options - hidden for simplified move-only interface
         self.auto_complete_checkbox = ft.Checkbox(
             label="Auto-complete workflow (automatically verify and finalize after copy)",
             value=False,
+            visible=False,
             tooltip="Check this to automatically run verify and finalize steps after copying completes"
         )
         
         self.file_level_symlinks_checkbox = ft.Checkbox(
             label="Replace each file with individual symlinks (default: replace entire directory)",
             value=False,
+            visible=False,
             tooltip="Check this to create a symlink for each copied file instead of replacing the entire directory with one symlink"
+        )
+        
+        # Sudo password field
+        self.sudo_password_field = ft.TextField(
+            label="Sudo Password (leave blank if not needed)",
+            password=True,
+            can_reveal_password=True,
+            width=300,
+            on_focus=lambda e: print("DEBUG: Sudo password field focused")
         )
         
         action_section = ft.Container(
@@ -194,6 +238,14 @@ class FreeSpaceApp:
                     self.finalize_button,
                     self.restore_button,
                 ], alignment=ft.MainAxisAlignment.SPACE_EVENLY),
+                ft.Row([
+                    self.move_button,
+                    self.restore_move_button,
+                ], alignment=ft.MainAxisAlignment.CENTER),
+                ft.Divider(height=20),
+                ft.Row([
+                    self.sudo_password_field,
+                ], alignment=ft.MainAxisAlignment.CENTER),
                 self.auto_complete_checkbox,
                 self.file_level_symlinks_checkbox,
             ], spacing=5),
@@ -228,6 +280,14 @@ class FreeSpaceApp:
             expand=True,
         )
         
+        # Kill button - initially hidden
+        self.kill_button = ft.OutlinedButton(
+            "STOP OPERATION",
+            icon=ft.Icons.STOP,
+            on_click=self.kill_operation,
+            visible=False  # Hidden until operation starts
+        )
+        
         # Status section
         status_section = ft.Container(
             content=ft.Column([
@@ -242,7 +302,10 @@ class FreeSpaceApp:
                 ], spacing=0),
                 self.progress_bar,
                 self.status_text,
-                ft.Text("Recent Log:", size=14, weight=ft.FontWeight.BOLD),
+                ft.Row([
+                    ft.Text("Recent Log:", size=14, weight=ft.FontWeight.BOLD),
+                    self.kill_button,
+                ], spacing=10, alignment=ft.MainAxisAlignment.SPACE_BETWEEN),
                 self.log_text_area,
             ], spacing=4),
             padding=10,
@@ -265,108 +328,61 @@ class FreeSpaceApp:
         )
     
     async def pick_source_directory(self, e):
-        """Open directory picker for source directories (supports multiple selection)."""
-        initial_directory = None
-        last_selected_name = None
+        """Open directory picker for single source directory selection."""
+        path = await self.source_picker.get_directory_path(
+            dialog_title="Select the directory to move"
+        )
         
-        while True:
-            # Build dialog title with helpful context
-            title = f"Select Source Directory ({len(self.source_directories)} selected so far - Cancel to finish)"
-            if last_selected_name:
-                title = f"Last: {last_selected_name} | {title}"
-            
-            path = await self.source_picker.get_directory_path(
-                dialog_title=title,
-                initial_directory=initial_directory
-            )
-            
-            if not path:
-                # User cancelled, exit loop
-                break
-            
-            # Directory selected
-            if path not in self.source_directories:
-                self.source_directories.append(path)
-                self.update_source_list()
-                self.update_button_states()
-                
-                # Remember the parent directory and name for next time
-                last_selected_name = os.path.basename(path)
-                initial_directory = os.path.dirname(path)
-            else:
-                # Already added, show message
-                self.show_info(f"Directory already added:\n{path}")
-    
-    def clear_source_directories(self, e):
-        """Clear all source directories."""
-        self.source_directories.clear()
-        self.update_source_list()
-        self.update_button_states()
-    
-    def update_source_list(self):
-        """Update the source directory list display."""
-        self.source_list.controls.clear()
-        
-        if not self.source_directories:
-            self.source_list.controls.append(
-                ft.Text("No directories selected", italic=True, color=ft.Colors.GREY_700)
-            )
-        else:
-            for i, dir_path in enumerate(self.source_directories):
-                self.source_list.controls.append(
-                    ft.Row([
-                        ft.Icon(ft.Icons.FOLDER, color=ft.Colors.BLUE_500),
-                        ft.Text(dir_path, expand=True, size=12),
-                        ft.IconButton(
-                            icon=ft.Icons.DELETE,
-                            icon_color=ft.Colors.RED_500,
-                            tooltip="Remove",
-                            on_click=lambda e, idx=i: self.remove_source_directory(idx)
-                        )
-                    ])
-                )
-        
-        self.page.update()
-    
-    def remove_source_directory(self, index: int):
-        """Remove a source directory by index."""
-        if 0 <= index < len(self.source_directories):
-            self.source_directories.pop(index)
-            self.update_source_list()
+        if path:
+            self.source_directory = path
+            self.source_text.value = path
+            self.source_text.italic = False
+            self.source_text.color = ft.Colors.BLUE_700
             self.update_button_states()
+            self.page.update()
+    
+    def clear_source_directory(self, e):
+        """Clear the source directory selection."""
+        self.source_directory = ""
+        self.source_text.value = "No directory selected"
+        self.source_text.italic = True
+        self.source_text.color = ft.Colors.GREY_700
+        self.update_button_states()
+        self.page.update()
+
     
     async def pick_destination_directory(self, e):
-        """Open directory picker for destination directory."""
+        """Open directory picker for destination device/location."""
         path = await self.destination_picker.get_directory_path(
-            dialog_title="Select Destination Directory (External Storage)"
+            dialog_title="Select destination device or location (where to move the directory)"
         )
         
         if path:
             self.destination_directory = path
-            
-            # Create the subdirectory structure: from-FreeSpace/<hostname>-<timestamp>
-            hostname = socket.gethostname().split('.')[0]  # Get short hostname
-            timestamp = datetime.datetime.now().strftime("%Y-%m-%d_%H%M%S")
-            session_dir = f"{hostname}-{timestamp}"
-            self.actual_destination_directory = os.path.join(path, "from-FreeSpace", session_dir)
-            
-            # Create the directory
-            os.makedirs(self.actual_destination_directory, exist_ok=True)
-            
-            self.destination_text.value = f"{path}\n→ from-FreeSpace/{session_dir}/"
+            self.destination_text.value = path
             self.destination_text.italic = False
             self.destination_text.color = ft.Colors.BLUE_700
             self.update_button_states()
             self.page.update()
     
+    def clear_destination_directory(self, e):
+        """Clear the destination directory selection."""
+        self.destination_directory = ""
+        self.destination_text.value = "No location selected"
+        self.destination_text.italic = True
+        self.destination_text.color = ft.Colors.GREY_700
+        self.update_button_states()
+        self.page.update()
+    
     def update_button_states(self):
         """Update the enabled/disabled state of action buttons."""
-        has_sources = len(self.source_directories) > 0
+        has_source = bool(self.source_directory)
         has_destination = bool(self.destination_directory)
         
-        self.copy_button.disabled = not (has_sources and has_destination)
-        # Restore button only needs source directories (will find symlinks there)
-        self.restore_button.disabled = not has_sources
+        # Move button needs both source and destination
+        self.move_button.disabled = not (has_source and has_destination)
+        # Restore button always available (user picks the moved directory in the dialog)
+        self.restore_move_button.disabled = False
         self.page.update()
     
     def update_status(self, message: str, show_progress: bool = False):
@@ -375,16 +391,40 @@ class FreeSpaceApp:
         self.progress_bar.visible = show_progress
         self.page.update()
     
-    def log_message(self, message: str):
-        """Add a message to the log text area with timestamp."""
+    def log_message(self, message: str, level: str = "INFO"):
+        """Add a message to the log text area with timestamp and level, and echo to terminal."""
         timestamp = datetime.datetime.now().strftime("%H:%M:%S")
-        log_entry = f"[{timestamp}] {message}\n"
+        # Format based on level
+        if level == "ERROR":
+            log_entry = f"[{timestamp}] ✗ {message}\n"
+            terminal_output = f"[{timestamp}] ERROR: {message}"
+        elif level == "SUCCESS":
+            log_entry = f"[{timestamp}] ✓ {message}\n"
+            terminal_output = f"[{timestamp}] SUCCESS: {message}"
+        elif level == "WARNING":
+            log_entry = f"[{timestamp}] ⚠ {message}\n"
+            terminal_output = f"[{timestamp}] WARNING: {message}"
+        elif level == "STOP":
+            log_entry = f"[{timestamp}] ⏹ {message}\n"
+            terminal_output = f"[{timestamp}] STOP: {message}"
+        else:
+            log_entry = f"[{timestamp}] {message}\n"
+            terminal_output = f"[{timestamp}] {message}"
+        
+        # Echo to terminal
+        print(terminal_output)
+        
         self.log_text_area.value += log_entry
         # Auto-scroll by keeping only last ~10 lines
         lines = self.log_text_area.value.split('\n')
         if len(lines) > 15:
             self.log_text_area.value = '\n'.join(lines[-15:])
         self.page.update()
+    
+    def kill_operation(self, e):
+        """Kill/stop the current operation."""
+        self.log_message("KILL signal received - stopping operation...", level="STOP")
+        self.stop_operation.set()  # Signal the background thread to stop
     
     def calculate_checksum(self, file_path: str) -> str:
         """Calculate SHA256 checksum of a file."""
@@ -1322,6 +1362,369 @@ class FreeSpaceApp:
     
             self.update_status("Finalization failed.", show_progress=False)
     
+    async def move_directory(self, e):
+        """Move selected directory to the destination and replace with symlink."""
+        print("DEBUG: move_directory function called")
+        if not self.source_directory or not self.destination_directory:
+            self.show_error("Please select both a directory to move and a destination location.")
+            return
+        
+        # Build move plan description
+        dir_name = os.path.basename(self.source_directory)
+        dest_path = os.path.join(self.destination_directory, dir_name)
+        
+        # Strong confirmation required
+        confirmed = await self.ask_yes_no(
+            "⚠️ Move Directory Confirmation",
+            f"This will MOVE the directory:\n"
+            f"  {self.source_directory}\n\n"
+            f"To:\n"
+            f"  {dest_path}\n\n"
+            f"The original directory will be replaced with a symbolic link.\n\n"
+            "This action cannot be undone!\n\n"
+            "Are you absolutely sure?"
+        )
+        
+        if confirmed:
+            print("DEBUG: Move confirmed")
+            # Get sudo password from the text field
+            sudo_password = self.sudo_password_field.value if self.sudo_password_field.value else None
+            print(f"DEBUG: Got sudo_password from field: {bool(sudo_password)}")
+            
+            # Reset kill switch for new operation
+            self.stop_operation.clear()
+            self.operation_in_progress = True
+            self.kill_button.visible = True
+            self.page.update()
+            
+            # Run the move operation in a background thread to avoid blocking UI
+            def run_move():
+                try:
+                    self._perform_move(self.destination_directory, sudo_password=sudo_password)
+                except Exception as ex:
+                    print(f"Exception during move: {ex}")
+                    import traceback
+                    traceback.print_exc()
+                finally:
+                    self.operation_in_progress = False
+                    self.kill_button.visible = False
+                    self.page.update()
+            
+            thread = threading.Thread(target=run_move, daemon=True)
+            thread.start()
+    
+    def _perform_move(self, destination: str, sudo_password: str = None):
+        """Perform the move operation for a single directory, with optional sudo support."""
+        src_dir = self.source_directory
+        dir_name = os.path.basename(src_dir)
+        dest_path = os.path.join(destination, dir_name)
+        
+        self.update_status(f"Moving directory: {dir_name}...", show_progress=True)
+        self.log_message(f"Starting move operation for {dir_name}...", level="INFO")
+        self.move_button.disabled = True
+        self.page.update()
+        
+        timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+        log_file = self.log_directory / f"move_log_{timestamp}.json"
+        
+        try:
+            # Normalize paths
+            self.log_message(f"Normalizing paths...", level="INFO")
+            src_dir = os.path.abspath(src_dir)
+            dest_path = os.path.abspath(dest_path)
+            self.log_message(f"Source: {src_dir}", level="INFO")
+            self.log_message(f"Destination: {dest_path}", level="INFO")
+            
+            # Check if operation was killed
+            if self.stop_operation.is_set():
+                self.log_message("Operation cancelled by user", level="STOP")
+                self.update_status("Move cancelled", show_progress=False)
+                return
+            
+            # Check if destination already exists - this could be from a previous interrupted move
+            self.log_message(f"Checking if destination exists...", level="INFO")
+            self.page.update()
+            
+            if os.path.exists(dest_path):
+                self.log_message(f"Destination already exists", level="WARNING")
+                self.page.update()
+                
+                # Check if source is already a symlink - if so, move is already complete
+                if os.path.islink(src_dir):
+                    self.log_message(f"Source is already a symlink - move already complete", level="SUCCESS")
+                    self.update_status("Move already complete - symlink already in place", show_progress=False)
+                    return
+                else:
+                    # Destination exists but source is not a symlink - treat as interrupted move and recover
+                    self.log_message(f"Treating as interrupted move - will complete by creating symlink", level="INFO")
+                    self.page.update()
+                    # Continue below to complete the move
+            
+            # Check if operation was killed
+            if self.stop_operation.is_set():
+                self.log_message("Operation cancelled by user", level="STOP")
+                self.update_status("Move cancelled", show_progress=False)
+                return
+            
+            # Calculate bytes to be moved
+            self.log_message(f"Calculating directory size...", level="INFO")
+            bytes_moved = 0
+            file_count = 0
+            for root, dirs, files in os.walk(src_dir):
+                for file in files:
+                    file_count += 1
+                    file_path = os.path.join(root, file)
+                    if not os.path.islink(file_path):
+                        try:
+                            bytes_moved += os.path.getsize(file_path)
+                        except (OSError, PermissionError):
+                            pass
+            
+            # Format bytes moved
+            if bytes_moved >= 1024**3:  # GB
+                space_moved = f"{bytes_moved / (1024**3):.2f} GB"
+            elif bytes_moved >= 1024**2:  # MB
+                space_moved = f"{bytes_moved / (1024**2):.2f} MB"
+            elif bytes_moved >= 1024:  # KB
+                space_moved = f"{bytes_moved / 1024:.2f} KB"
+            else:
+                space_moved = f"{bytes_moved} bytes"
+            
+            self.log_message(f"Directory contains {file_count} files ({space_moved})", level="INFO")
+            
+            # Check if operation was killed
+            if self.stop_operation.is_set():
+                self.log_message("Operation cancelled by user", level="STOP")
+                self.update_status("Move cancelled", show_progress=False)
+                return
+            
+            # Use the API to perform the move (which handles sudo)
+            self.log_message(f"Starting atomic move operation...", level="INFO")
+            from freespace_api import FreeSpaceAPI
+            api = FreeSpaceAPI(log_directory=str(self.log_directory))
+            result = api.move_directory(src_dir, dest_path, sudo_password=sudo_password)
+            
+            # Check if operation was killed during move
+            if self.stop_operation.is_set():
+                self.log_message("Operation cancelled during move", level="STOP")
+                self.update_status("Move cancelled", show_progress=False)
+                return
+            
+            # Log the result
+            if result.get("status") == "already_complete":
+                self.log_message(f"✓ Move already complete - symlink already in place", level="SUCCESS")
+            else:
+                # Log details about files that were moved
+                if "files_moved" in result or "file_count" in result:
+                    file_count = result.get("file_count", len(result.get("files_moved", [])))
+                    self.log_message(f"✓ Moved {file_count} files", level="SUCCESS")
+                    # Log a sample of moved files
+                    if "files_moved" in result:
+                        for f in result.get("files_moved", [])[:10]:
+                            self.log_message(f"  ✓ {f}", level="INFO")
+                        if len(result.get("files_moved", [])) > 10:
+                            remaining = file_count - 10
+                            self.log_message(f"  ... and {remaining} more files", level="INFO")
+            
+            self.log_message(f"Move operation completed successfully", level="SUCCESS")
+            self.log_message(f"Creating symlink at original location...", level="INFO")
+            self.log_message(f"✓ Successfully moved {dir_name}", level="SUCCESS")
+            
+            status_msg = f"✓ Move completed! {dir_name} moved to {destination}. Space freed: {space_moved}."
+            self.update_status(status_msg, show_progress=False)
+            print("DEBUG: Move operation completed and status updated")
+            sys.stdout.flush()
+            
+            # Reset state
+            self.source_directory = ""
+            self.destination_directory = ""
+            self.source_text.value = "No directory selected"
+            self.source_text.italic = True
+            self.source_text.color = ft.Colors.GREY_700
+            self.destination_text.value = "No location selected"
+            self.destination_text.italic = True
+            self.destination_text.color = ft.Colors.GREY_700
+            self.update_button_states()
+            print("DEBUG: State reset and button states updated")
+            sys.stdout.flush()
+            
+        except PermissionError as perm_ex:
+            # Permission denied - shouldn't happen now with sudo support
+            self.log_message(f"✗ Permission denied: {str(perm_ex)}", level="ERROR")
+            self.show_error(f"Permission denied: {str(perm_ex)}\n\nTry running with sudo enabled.")
+            
+        except OSError as os_ex:
+            # OSError includes permission denied when wrapped by subprocess
+            error_msg = str(os_ex)
+            if "Permission denied" in error_msg or "permission" in error_msg.lower():
+                self.log_message(f"✗ Permission denied: {error_msg}", level="ERROR")
+                self.show_error(f"Permission denied.\n\nThe move operation requires elevated privileges.\n\nError: {error_msg}")
+            else:
+                self.log_message(f"✗ OS Error: {error_msg}", level="ERROR")
+                self.show_error(f"OS Error during move: {error_msg}")
+            
+        except FileExistsError as exists_ex:
+            # Destination already exists - this should have been handled, log as warning only
+            self.log_message(f"⚠ Destination already exists, checking for interrupted move recovery", level="WARNING")
+            self.update_status("Destination already exists", show_progress=False)
+            
+        except Exception as ex:
+            self.show_error(f"Error during move operation: {str(ex)}")
+            self.update_status("Move operation failed.", show_progress=False)
+            self.log_message(f"✗ Move operation failed: {ex}")
+        finally:
+            print("DEBUG: Move operation finally block - re-enabling button and updating page")
+            sys.stdout.flush()
+            self.move_button.disabled = False
+            self.page.update()
+            print("DEBUG: Page updated in finally block")
+            sys.stdout.flush()
+    
+    async def restore_moved_directory(self, e):
+        """Restore a previously moved directory to a chosen location."""
+        # Ask user for the moved directory location
+        moved_location = await self.destination_picker.get_directory_path(
+            dialog_title="Select the directory to restore (the moved location)"
+        )
+        
+        if not moved_location:
+            return
+        
+        # Check for metadata to show original location
+        metadata_file = os.path.join(moved_location, ".freespace_move_metadata.json")
+        original_location = "unknown location"
+        
+        try:
+            if os.path.exists(metadata_file):
+                with open(metadata_file, 'r') as f:
+                    metadata = json.load(f)
+                    original_location = metadata.get("original_location", "unknown location")
+        except Exception:
+            pass
+        
+        # Ask where to restore the directory
+        restore_destination = await self.destination_picker.get_directory_path(
+            dialog_title="Select destination where to restore the directory"
+        )
+        
+        if not restore_destination:
+            return
+        
+        # Confirmation
+        confirmed = await self.ask_yes_no(
+            "⚠️ Restore Moved Directory",
+            f"This will restore the directory from:\n"
+            f"  {moved_location}\n\n"
+            f"To the destination:\n"
+            f"  {restore_destination}\n\n"
+            f"(Original location was: {original_location})\n\n"
+            "The symlink at the original location will be removed and replaced with the actual directory.\n\n"
+            "Are you sure?"
+        )
+        
+        if confirmed:
+            # Get sudo password from the text field
+            sudo_password = self.sudo_password_field.value if self.sudo_password_field.value else None
+            print(f"DEBUG: Got sudo_password from field: {bool(sudo_password)}")
+            
+            # Reset kill switch for new operation
+            self.stop_operation.clear()
+            self.operation_in_progress = True
+            self.kill_button.visible = True
+            self.page.update()
+            
+            # Run the restore operation in a background thread
+            def run_restore():
+                try:
+                    self._perform_restore_move(moved_location, restore_destination, sudo_password=sudo_password)
+                except Exception as ex:
+                    print(f"Exception during restore move: {ex}")
+                    import traceback
+                    traceback.print_exc()
+                finally:
+                    self.operation_in_progress = False
+                    self.kill_button.visible = False
+                    self.page.update()
+            
+            thread = threading.Thread(target=run_restore, daemon=True)
+            thread.start()
+    
+    def _perform_restore_move(self, moved_location: str, restore_destination: str, sudo_password: str = None):
+        """Perform the restore move operation, with optional sudo support."""
+        self.update_status("Restoring moved directory...", show_progress=True)
+        self.log_message("Starting restore move operation...", level="INFO")
+        self.log_message(f"Moved location: {moved_location}", level="INFO")
+        self.log_message(f"Restore destination: {restore_destination}", level="INFO")
+        self.restore_move_button.disabled = True
+        self.page.update()
+        
+        timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+        log_file = self.log_directory / f"restore_move_log_{timestamp}.json"
+        
+        try:
+            # Check if operation was killed
+            if self.stop_operation.is_set():
+                self.log_message("Operation cancelled by user", level="STOP")
+                self.update_status("Restore cancelled", show_progress=False)
+                return
+            
+            self.log_message("Reading move metadata...", level="INFO")
+            from freespace_api import FreeSpaceAPI
+            api = FreeSpaceAPI(log_directory=str(self.log_directory))
+            
+            # Check if operation was killed
+            if self.stop_operation.is_set():
+                self.log_message("Operation cancelled by user", level="STOP")
+                self.update_status("Restore cancelled", show_progress=False)
+                return
+            
+            self.log_message("Starting restore operation...", level="INFO")
+            result = api.restore_moved_directory(moved_location, restore_destination, sudo_password=sudo_password)
+            
+            # Check if operation was killed during restore
+            if self.stop_operation.is_set():
+                self.log_message("Operation cancelled during restore", level="STOP")
+                self.update_status("Restore cancelled", show_progress=False)
+                return
+            
+            bytes_restored = result.get("bytes_restored", 0)
+            
+            # Format bytes restored
+            if bytes_restored >= 1024**3:  # GB
+                space_restored = f"{bytes_restored / (1024**3):.2f} GB"
+            elif bytes_restored >= 1024**2:  # MB
+                space_restored = f"{bytes_restored / (1024**2):.2f} MB"
+            elif bytes_restored >= 1024:  # KB
+                space_restored = f"{bytes_restored / 1024:.2f} KB"
+            else:
+                space_restored = f"{bytes_restored} bytes"
+            
+            self.log_message(f"Removing symlink from original location...", level="INFO")
+            self.log_message(f"Restore operation completed successfully", level="SUCCESS")
+            self.log_message(f"✓ Directory restored to {restore_destination}", level="SUCCESS")
+            
+            status_msg = f"Restore completed! Directory restored to: {restore_destination}. Space used: {space_restored}."
+            
+            self.update_status(status_msg, show_progress=False)
+            
+        except PermissionError as perm_ex:
+            # Permission denied - show error
+            self.log_message(f"Permission denied: {str(perm_ex)}", level="ERROR")
+            self.show_error(f"Permission denied: {str(perm_ex)}\n\nYou may need to run the app with elevated privileges or try again.")
+            
+        except Exception as ex:
+            self.log_message(f"Restore operation failed: {str(ex)}", level="ERROR")
+            self.show_error(f"Error during restore operation: {str(ex)}")
+            self.update_status("Restore operation failed.", show_progress=False)
+            self.log_message(f"✗ Restore operation failed: {ex}")
+        finally:
+            print("DEBUG: Restore operation finally block - re-enabling button and updating page")
+            sys.stdout.flush()
+            self.restore_move_button.disabled = False
+            self.page.update()
+            print("DEBUG: Restore page updated in finally block")
+            sys.stdout.flush()
+    
     def show_error(self, message: str):
         """Show an error dialog."""
         def close_dlg(e):
@@ -1384,6 +1787,52 @@ class FreeSpaceApp:
         # Wait for dialog to close
         while dlg.open:
             await asyncio.sleep(0.1)
+        
+        return result[0]
+    
+    async def prompt_for_password(self, title: str = "Enter Password", message: str = "Enter your sudo password:") -> str:
+        """Show a password prompt dialog and return the password."""
+        result = [""]  # Use list to allow modification
+        
+        password_field = ft.TextField(
+            label="Password",
+            password=True,
+            can_reveal_password=True,
+            width=300
+        )
+        
+        def on_ok(e):
+            result[0] = password_field.value
+            dlg.open = False
+            self.page.update()
+        
+        def on_cancel(e):
+            result[0] = ""
+            dlg.open = False
+            self.page.update()
+        
+        dlg = ft.AlertDialog(
+            modal=True,
+            title=ft.Text(title),
+            content=ft.Column([
+                ft.Text(message),
+                password_field
+            ], spacing=10),
+            actions=[
+                ft.TextButton("OK", on_click=on_ok),
+                ft.TextButton("Cancel", on_click=on_cancel),
+            ],
+        )
+        self.page.overlay.append(dlg)
+        dlg.open = True
+        password_field.focus()
+        self.page.update()
+        
+        # Wait for dialog to close
+        while dlg.open:
+            await asyncio.sleep(0.1)
+        
+        return result[0]
         
         return result[0]
     
